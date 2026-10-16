@@ -82,10 +82,10 @@ export class FountainDecoder {
       this.waitingList.push({ indices: activeIndices, payload });
     }
 
-    // If not complete and we have enough waiting equations, attempt Inactivation GE
-    if (!this.isComplete()) {
+    // If not complete and we have waiting equations, attempt Inactivation GE
+    if (!this.isComplete() && this.waitingList.length > 0) {
       const numUnknowns = this.K - this.solvedCount;
-      if (this.waitingList.length >= numUnknowns) {
+      if (this.waitingList.length >= numUnknowns || (numUnknowns <= 64 && this.waitingList.length >= 2)) {
         this._tryInactivationGE(numUnknowns);
       }
     }
@@ -153,6 +153,8 @@ export class FountainDecoder {
    * @private
    */
   _tryInactivationGE(numUnknowns) {
+    if (this.isComplete() || this.waitingList.length === 0) return;
+
     // Map unknown block indices to 0..numUnknowns-1
     const unknownMap = new Int32Array(this.K).fill(-1);
     const revUnknownMap = new Int32Array(numUnknowns);
@@ -166,35 +168,86 @@ export class FountainDecoder {
       }
     }
 
-    const numWords = Math.ceil(numUnknowns / 32);
+    if (uCount === 0) return;
+
+    const numWords = Math.ceil(uCount / 32);
     const equations = [];
 
     for (let i = 0; i < this.waitingList.length; i++) {
       const eq = this.waitingList[i];
       const mask = new Uint32Array(numWords);
+      let rhs = eq.payload;
+      let rhsCopied = false;
       let valid = false;
 
       for (let j = 0; j < eq.indices.length; j++) {
-        const uIdx = unknownMap[eq.indices[j]];
-        if (uIdx >= 0) {
-          mask[uIdx >>> 5] |= (1 << (uIdx & 31));
-          valid = true;
+        const idx = eq.indices[j];
+        if (this.isSolved[idx]) {
+          if (!rhsCopied) {
+            rhs = new Uint32Array(eq.payload);
+            rhsCopied = true;
+          }
+          const solvedBlock = this.solved[idx];
+          for (let w = 0; w < 112; w++) {
+            rhs[w] ^= solvedBlock[w];
+          }
+        } else {
+          const uIdx = unknownMap[idx];
+          if (uIdx >= 0) {
+            mask[uIdx >>> 5] |= (1 << (uIdx & 31));
+            valid = true;
+          }
         }
       }
 
       if (valid) {
-        equations.push({ mask, rhs: eq.payload });
+        equations.push({ mask, rhs });
       }
     }
 
-    if (equations.length < numUnknowns) return;
+    if (equations.length === 0) return;
 
-    const res = solveBinarySystem(equations, numUnknowns);
+    const res = solveBinarySystem(equations, uCount);
+
     if (res.success && res.solution) {
-      for (let i = 0; i < numUnknowns; i++) {
+      for (let i = 0; i < uCount; i++) {
         const origBlockIdx = revUnknownMap[i];
         this._solveBlock(origBlockIdx, res.solution[i]);
       }
+      this.waitingList = [];
+      return;
+    }
+
+    // Partial solutions from rows with Hamming weight 1
+    const hasPartial = res.partialSolutions && res.partialSolutions.length > 0;
+    if (hasPartial) {
+      for (let i = 0; i < res.partialSolutions.length; i++) {
+        const { col, value } = res.partialSolutions[i];
+        const origBlockIdx = revUnknownMap[col];
+        this._solveBlock(origBlockIdx, value);
+      }
+    }
+
+    // Reconstruct waiting list from reduced equations with Hamming weight > 1
+    if (hasPartial || (res.reducedEquations && res.reducedEquations.length < this.waitingList.length)) {
+      const newWaiting = [];
+      if (res.reducedEquations) {
+        for (let i = 0; i < res.reducedEquations.length; i++) {
+          const origIndices = res.reducedEquations[i].cols.map(c => revUnknownMap[c]);
+          newWaiting.push({
+            indices: origIndices,
+            payload: res.reducedEquations[i].rhs
+          });
+        }
+      }
+      this.waitingList = newWaiting;
+
+      if (hasPartial) {
+        this._peelCascade();
+      }
+    }
+
+    if (this.isComplete()) {
       this.waitingList = [];
     }
   }

@@ -100,6 +100,15 @@ function renderOverlay(corners, stripes) {
     overlayCtx.strokeStyle = '#ffffff';
     overlayCtx.stroke();
   }
+
+  if (isDebug) {
+    overlayCtx.fillStyle = '#10b981';
+    overlayCtx.font = '14px monospace';
+    overlayCtx.fillText(`TL: (${pts[0].x.toFixed(1)}, ${pts[0].y.toFixed(1)})`, 10, 25);
+    overlayCtx.fillText(`TR: (${pts[1].x.toFixed(1)}, ${pts[1].y.toFixed(1)})`, 10, 45);
+    overlayCtx.fillText(`BR: (${pts[2].x.toFixed(1)}, ${pts[2].y.toFixed(1)})`, 10, 65);
+    overlayCtx.fillText(`BL: (${pts[3].x.toFixed(1)}, ${pts[3].y.toFixed(1)})`, 10, 85);
+  }
 }
 
 function showCompletion(result) {
@@ -117,6 +126,53 @@ function showCompletion(result) {
   dlBtn.download = result.fileName;
 }
 
+const urlParams = new URLSearchParams(window.location.search);
+const sourceMode = urlParams.get('source');
+const isDebug = urlParams.get('debug') === '1';
+
+const loadFileBtn = document.getElementById('loadFileBtn');
+const videoFileInput = document.getElementById('videoFileInput');
+
+if (sourceMode === 'file') {
+  startBtn.style.display = 'none';
+  loadFileBtn.style.display = 'inline-block';
+  loadFileBtn.addEventListener('click', () => videoFileInput.click());
+  videoFileInput.addEventListener('change', async () => {
+    const file = videoFileInput.files?.[0];
+    if (!file) return;
+    try {
+      video = document.getElementById('cameraVideo');
+      video.src = URL.createObjectURL(file);
+      video.loop = true;
+      await video.play();
+      startReceiving();
+    } catch (err) {
+      alert(`Video error: ${err.message}`);
+    }
+  });
+}
+
+function startReceiving() {
+  overlayCanvas = document.getElementById('overlayCanvas');
+  overlayCanvas.width = video.videoWidth || 1280;
+  overlayCanvas.height = video.videoHeight || 720;
+  overlayCtx = overlayCanvas.getContext('2d');
+
+  offscreenCanvas = document.createElement('canvas');
+  offscreenCanvas.width = overlayCanvas.width;
+  offscreenCanvas.height = overlayCanvas.height;
+  offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+
+  startBtn.style.display = 'none';
+  if (loadFileBtn) loadFileBtn.style.display = 'none';
+  cameraArea.style.display = 'block';
+  progressPanel.style.display = 'block';
+
+  isCapturing = true;
+  startTime = performance.now();
+  scheduleNextFrame();
+}
+
 startBtn.addEventListener('click', async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -131,23 +187,7 @@ startBtn.addEventListener('click', async () => {
     video.srcObject = stream;
     await video.play();
 
-    overlayCanvas = document.getElementById('overlayCanvas');
-    overlayCanvas.width = video.videoWidth;
-    overlayCanvas.height = video.videoHeight;
-    overlayCtx = overlayCanvas.getContext('2d');
-
-    offscreenCanvas = document.createElement('canvas');
-    offscreenCanvas.width = video.videoWidth;
-    offscreenCanvas.height = video.videoHeight;
-    offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
-
-    startBtn.style.display = 'none';
-    cameraArea.style.display = 'block';
-    progressPanel.style.display = 'block';
-
-    isCapturing = true;
-    startTime = performance.now();
-    scheduleNextFrame();
+    startReceiving();
   } catch (err) {
     alert(`Camera error: ${err.message}`);
   }

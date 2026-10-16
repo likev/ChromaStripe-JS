@@ -1,0 +1,11 @@
+{
+  "name": "recorded-video",
+  "camera": { "width": 1280, "height": 720, "fps": 30, "readoutMs": 20, "exposureMs": 16, "dropProb": 0 },
+  "display": { "refreshHz": 60, "txHold": 4 },
+  "geometry": { "codeHeightFrac": 0.80, "yawDeg": 5, "pitchDeg": 5, "rollDeg": 2, "k1": -0.04, "shakeX": 0.5, "shakeY": 0.5 },
+  "optics": { "psfSigma": 0.7 },
+  "lighting": { "glare": null, "gradient": 0.08, "vignette": 0.15, "ambient": 0.02 },
+  "color": { "crosstalkDiag": 0.90, "awbGains": [1.02, 1.0, 1.05], "saturation": 0.95, "blackLevel": 4 },
+  "sensor": { "readNoise": 1.5, "shot": 0.01, "chroma420": true, "dctQuality": 70 },
+  "background": { "distractors": 2 }
+}

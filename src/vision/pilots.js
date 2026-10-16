@@ -11,11 +11,13 @@ export class PilotCalibrator {
    * @param {number} width - Camera width
    * @param {number} height - Camera height
    * @param {Float64Array} H - Homography matrix
+   * @param {TimingRefiner} [timingRefiner] - Optional timing offset provider
    */
-  constructor(rgba, width, height, H) {
+  constructor(rgba, width, height, H, timingRefiner = null) {
     this.width = width;
     this.height = height;
     this.H = H;
+    this.timingRefiner = timingRefiner;
 
     // 4x4 pilot lattice coordinates
     this.pilotCoords = [9.5, 29.5, 49.5, 69.5];
@@ -27,7 +29,16 @@ export class PilotCalibrator {
 
   _samplePilots(rgba) {
     const sample3x3 = (u, v) => {
-      const { x, y } = projectH(this.H, u, v);
+      let du = 0, dv = 0;
+      if (this.timingRefiner) {
+        const off = this.timingRefiner.getOffset(
+          Math.max(0, Math.min(79, Math.round(u - 0.5))),
+          Math.max(0, Math.min(79, Math.round(v - 0.5)))
+        );
+        du = off.du;
+        dv = off.dv;
+      }
+      const { x, y } = projectH(this.H, u + du, v + dv);
       const ix = Math.round(x);
       const iy = Math.round(y);
 

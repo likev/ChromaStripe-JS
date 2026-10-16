@@ -73,11 +73,16 @@ export class FrameDecoder {
       };
     }
 
-    // 3. Timing track refinement & Coons patch
-    const timingRefiner = new TimingRefiner(rgba, width, height, H);
+    // 3. Timing track refinement & lens distortion compensation
+    const timingRefiner = new TimingRefiner(rgba, width, height, H, [
+      corners.TL,
+      corners.TR,
+      corners.BL,
+      corners.BR
+    ]);
 
-    // 4. Pilot calibration
-    const pilotCalibrator = new PilotCalibrator(rgba, width, height, H);
+    // 4. Pilot calibration with timing offset
+    const pilotCalibrator = new PilotCalibrator(rgba, width, height, H, timingRefiner);
 
     // 5. Sample and decode each of the 4 stripes
     const stripes = new Array(4);

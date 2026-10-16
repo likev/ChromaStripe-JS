@@ -150,22 +150,28 @@
       frameDecoder = new FrameDecoder();
 
       txFramesMap.clear();
-      for (let f = 0; f < 50; f++) {
-        txFramesMap.set(f, txSession.getNextFrame());
-      }
 
       const imgData = ctx.createImageData(800, 600);
       let frameNo = 0;
       const tStart = performance.now();
+      const maxFrames = Math.max(100, Math.ceil(txSession.K * 1.5) + 30);
 
       function step() {
-        if (!isRunning || rxSession.isComplete || frameNo >= 60) {
+        if (!isRunning || rxSession.isComplete || frameNo >= maxFrames) {
           isRunning = false;
           runBtn.disabled = false;
           if (rxSession.isComplete) {
             alert(`Transfer Complete! Verified SHA-256: ${rxSession.result.sha256Verified}`);
           }
           return;
+        }
+
+        // Dynamically generate TX frame
+        if (!txFramesMap.has(frameNo)) {
+          txFramesMap.set(frameNo, txSession.getNextFrame());
+        }
+        if (frameNo > 15) {
+          txFramesMap.delete(frameNo - 15);
         }
 
         // Configure camera from sliders

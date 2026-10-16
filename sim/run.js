@@ -27,6 +27,8 @@ function getArg(flag, defaultValue) {
 const levelArg = getArg('--level', 'all');
 const scenarioArg = getArg('--scenario', 'ideal');
 const trialsArg = parseInt(getArg('--trials', '10'), 10);
+const fileArg = getArg('--file', 'C1:64KB');
+const framesArg = parseInt(getArg('--frames', '0'), 10);
 
 async function runL0() {
   console.log('\n========================================');
@@ -146,7 +148,7 @@ async function runL2() {
   }
   const scenario = JSON.parse(fs.readFileSync(scenarioPath, 'utf8'));
 
-  const file = getCorpusFile('C1:64KB');
+  const file = getCorpusFile(fileArg);
   const tx = new TxSession(file.data, { fileName: file.name, scale: 1 });
   await tx.init();
 
@@ -156,17 +158,22 @@ async function runL2() {
 
   const txFramesMap = new Map();
   let frameCount = 0;
-  const maxFrames = Math.min(trialsArg * 5, 40);
-
-  // Pre-generate TX frames
-  for (let f = 0; f < maxFrames; f++) {
-    txFramesMap.set(f, tx.getNextFrame());
-  }
+  const maxFrames = framesArg > 0 ? framesArg : Math.max(trialsArg * 5, Math.ceil(tx.K * 1.5) + 30);
 
   let totalDecodedStripes = 0;
   let totalVisibleStripes = 0;
+  const startTime = Date.now();
 
   for (let f = 0; f < maxFrames && !rx.isComplete; f++) {
+    // Generate TX frame dynamically
+    if (!txFramesMap.has(f)) {
+      txFramesMap.set(f, tx.getNextFrame());
+    }
+    // Prune stale TX frames to avoid unbounded memory
+    if (f > 15) {
+      txFramesMap.delete(f - 15);
+    }
+
     const tC = f * (1000 / camera.fps);
     const camFrame = camera.captureFrame(tC, txFramesMap);
 
@@ -187,10 +194,18 @@ async function runL2() {
     }
   }
 
+  const elapsedSec = (Date.now() - startTime) / 1000;
   const yieldPct = totalVisibleStripes > 0 ? (totalDecodedStripes / totalVisibleStripes) * 100 : 0;
-  console.log(`Completed in ${frameCount} frames. Stripe Yield: ${yieldPct.toFixed(1)}%. Transfer Complete: ${rx.isComplete}`);
+  const epsilon = rx.isComplete ? (totalDecodedStripes / tx.K) - 1.0 : null;
+
+  console.log(`\nResults for ${scenarioArg} (${fileArg}, K=${tx.K}):`);
+  console.log(`- Elapsed Time: ${elapsedSec.toFixed(2)}s (${(frameCount / elapsedSec).toFixed(1)} fps)`);
+  console.log(`- Frames: ${frameCount}/${maxFrames}`);
+  console.log(`- Stripe Yield: ${yieldPct.toFixed(1)}% (${totalDecodedStripes}/${totalVisibleStripes})`);
+  console.log(`- Transfer Complete: ${rx.isComplete}`);
   if (rx.isComplete) {
-    console.log(`SHA-256 Verified: ${rx.result.sha256Verified}`);
+    console.log(`- Overhead epsilon: ${(epsilon * 100).toFixed(1)}%`);
+    console.log(`- SHA-256 Verified: ${rx.result.sha256Verified}`);
   }
 }
 

@@ -13,6 +13,9 @@ test('integration: e2e oracle transfer across corpus files C0-C5', async () => {
     'C1:64KB',
     'C2:text',
     'C3:zeros',
+    'C4:png',
+    'C4:zip',
+    'C4:pdf',
     'C5:unicode'
   ];
 

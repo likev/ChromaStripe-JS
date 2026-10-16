@@ -50,6 +50,19 @@ export function getCorpusFile(id, options = {}) {
       return { name: 'all_ones.bin', data, mime: 'application/octet-stream' };
     }
 
+    case 'C4:png': {
+      const data = loadFixture('sample.png');
+      return { name: 'sample.png', data, mime: 'image/png' };
+    }
+    case 'C4:zip': {
+      const data = loadFixture('sample.zip');
+      return { name: 'sample.zip', data, mime: 'application/zip' };
+    }
+    case 'C4:pdf': {
+      const data = loadFixture('sample.pdf');
+      return { name: 'sample.pdf', data, mime: 'application/pdf' };
+    }
+
     case 'C5:unicode':
       return {
         name: '📁_文件_مستند_🎉.txt',
@@ -68,4 +81,40 @@ function generatePrngBytes(length, rng) {
     buf[i] = rng.nextBelow(256);
   }
   return buf;
+}
+
+function loadFixture(filename) {
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    try {
+      const fs = globalThis.fs || (await_import_fs());
+      const path = globalThis.path || (await_import_path());
+      const fixturePath = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../test/fixtures', filename);
+      return new Uint8Array(fs.readFileSync(fixturePath));
+    } catch {
+      // fallback
+    }
+  }
+  return new Uint8Array(1024);
+}
+
+let nodeFs = null;
+let nodePath = null;
+function await_import_fs() {
+  if (!nodeFs) {
+    try {
+      // synchronous require in commonjs, or createRequire
+      const { createRequire } = globalThis.module || {};
+      if (createRequire) nodeFs = createRequire(import.meta.url)('node:fs');
+    } catch {}
+  }
+  return nodeFs;
+}
+function await_import_path() {
+  if (!nodePath) {
+    try {
+      const { createRequire } = globalThis.module || {};
+      if (createRequire) nodePath = createRequire(import.meta.url)('node:path');
+    } catch {}
+  }
+  return nodePath;
 }

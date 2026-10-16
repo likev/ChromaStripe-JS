@@ -34,7 +34,8 @@ export class CameraGeometry {
   _computeHomography() {
     const cx = this.camW / 2 + this.shakeX;
     const cy = this.camH / 2 + this.shakeY;
-    const s = (this.camH * this.codeHeightFrac) / 80.0;
+    const minDim = Math.min(this.camW, this.camH);
+    const s = (minDim * this.codeHeightFrac) / 80.0;
 
     // Perspective foreshortening from yaw/pitch
     const yawRad = (this.yawDeg * Math.PI) / 180;

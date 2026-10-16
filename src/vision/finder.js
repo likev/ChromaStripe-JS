@@ -1,7 +1,7 @@
 /**
  * Finder pattern detector: 1D scanline chrominance difference (R - G),
- * 1:1:3:1:1 ratio matcher, full 2D vertical cross-check, sub-pixel centroid,
- * and geometric corner ordering.
+ * 1:1:3:1:1 ratio matcher, 2D vertical cross-check, sub-pixel centroid,
+ * ROI tracking mode, and geometric corner ordering.
  */
 
 /**
@@ -11,7 +11,7 @@
  * @param {number} width - Camera width
  * @param {number} height - Camera height
  * @param {object} [options]
- * @param {Array<{x: number, y: number}>} [options.prevCorners] - Optional tracking priors
+ * @param {Array<{x: number, y: number}>} [options.prevCorners] - Optional tracking priors [TL, TR, BL, BR]
  * @param {number} [options.scanStep=4] - Scanline step
  * @returns {{
  *   found: boolean,
@@ -21,146 +21,120 @@
  * }}
  */
 export function findCorners(rgba, width, height, options = {}) {
+  const prevCorners = options.prevCorners;
+
+  // 1. ROI Fast Tracking Mode: if previous corners are valid, search local ROIs first
+  if (prevCorners && prevCorners.length === 4) {
+    const tracked = trackCornersROI(rgba, width, height, prevCorners);
+    if (tracked.found) {
+      return tracked;
+    }
+  }
+
+  // 2. Full scanline search
   const scanStep = options.scanStep || 4;
   const candidates = [];
+  const T = 35; // Chrominance threshold for Magenta (+T) vs Cyan (-T)
 
-  const getPixel = (x, y) => {
+  const getCdiff = (x, y) => {
     const idx = (y * width + x) * 4;
-    return {
-      r: rgba[idx],
-      g: rgba[idx + 1],
-      b: rgba[idx + 2],
-      cdiff: rgba[idx] - rgba[idx + 1],
-      luma: 0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2]
-    };
+    return rgba[idx] - rgba[idx + 1];
   };
 
-  // 1. Scan rows every scanStep
   const minRow = 5;
   const maxRow = height - 5;
 
   for (let y = minRow; y < maxRow; y += scanStep) {
-    let state = 0; // 0: outer, 1: ring, 2: core, 3: ring
-    let startX = 0;
-    let seg1Len = 0, seg2Len = 0, seg3Len = 0;
-    let isCandidateInverted = false;
+    // Run-length encode signs along row y
+    // +1: cdiff >= T (Magenta)
+    // -1: cdiff <= -T (Cyan)
+    //  0: neutral / transition
+    const runs = [];
+    let curSign = 0, runLen = 0, runStart = 0;
 
-    for (let x = 5; x < width - 5; x++) {
-      const p = getPixel(x, y);
+    for (let x = 4; x < width - 4; x++) {
+      const cd = getCdiff(x, y);
+      const s = cd >= T ? 1 : (cd <= -T ? -1 : 0);
+      if (s === curSign) {
+        runLen++;
+      } else {
+        if (runLen > 0) runs.push({ sign: curSign, start: runStart, len: runLen });
+        curSign = s;
+        runStart = x;
+        runLen = 1;
+      }
+    }
+    if (runLen > 0) runs.push({ sign: curSign, start: runStart, len: runLen });
 
-      if (state === 0) {
-        if (p.cdiff >= 45) {
-          // Standard candidate: enters Magenta ring
-          state = 1;
-          startX = x;
-          isCandidateInverted = false;
-        } else if (p.cdiff <= -45) {
-          // Inverted candidate: enters Cyan ring
-          state = 1;
-          startX = x;
-          isCandidateInverted = true;
-        }
-      } else if (state === 1) {
-        const inCore = isCandidateInverted ? (p.cdiff >= 40) : (p.cdiff <= -40);
-        if (inCore) {
-          seg1Len = x - startX;
-          state = 2;
-          startX = x;
-        } else {
-          const stillRing = isCandidateInverted ? (p.cdiff <= -25) : (p.cdiff >= 25);
-          if (!stillRing || (x - startX > 150)) {
-            state = 0; // reset
-          }
-        }
-      } else if (state === 2) {
-        const exitCore = isCandidateInverted ? (p.cdiff <= -35) : (p.cdiff >= 35);
-        if (exitCore) {
-          seg2Len = x - startX;
-          state = 3;
-          startX = x;
-        } else {
-          const stillCore = isCandidateInverted ? (p.cdiff >= 25) : (p.cdiff <= -25);
-          if (!stillCore || (x - startX > 300)) {
-            state = 0; // reset
-          }
-        }
-      } else if (state === 3) {
-        const exitRing = isCandidateInverted ? (p.cdiff > -20) : (p.cdiff < 20);
-        if (exitRing) {
-          seg3Len = x - startX;
-          state = 0;
+    // Look for 1:3:1 sequence:
+    // Standard: +1 (ring) -> [transition <= 4px] -> -1 (core) -> [transition <= 4px] -> +1 (ring)
+    // Inverted: -1 (ring) -> [transition <= 4px] -> +1 (core) -> [transition <= 4px] -> -1 (ring)
+    for (let i = 0; i < runs.length; i++) {
+      const r1 = runs[i];
+      if (r1.sign === 0) continue;
+      const targetCoreSign = -r1.sign;
 
-          // Check 1:3:1 ratio
-          const minRing = Math.min(seg1Len, seg3Len);
-          const maxRing = Math.max(seg1Len, seg3Len);
+      let j = i + 1;
+      if (j < runs.length && runs[j].sign === 0 && runs[j].len <= 5) j++;
+      if (j >= runs.length || runs[j].sign !== targetCoreSign) continue;
+      const r2 = runs[j]; // core
 
-          if (minRing >= 2 && maxRing <= minRing * 2.5) {
-            const expectedCore = (seg1Len + seg3Len) * 1.5;
-            if (seg2Len >= expectedCore * 0.45 && seg2Len <= expectedCore * 2.2) {
-              const approxCenterX = Math.round(startX - seg3Len - seg2Len / 2);
+      let k = j + 1;
+      if (k < runs.length && runs[k].sign === 0 && runs[k].len <= 5) k++;
+      if (k >= runs.length || runs[k].sign !== r1.sign) continue;
+      const r3 = runs[k]; // ring
 
-              // 2. Full vertical cross check
-              const vCheck = crossCheckVertical(
-                rgba,
-                width,
-                height,
-                approxCenterX,
-                y,
-                seg2Len,
-                isCandidateInverted
-              );
+      // Check ring thicknesses and 1:3:1 ratio
+      const minRing = Math.min(r1.len, r3.len);
+      const maxRing = Math.max(r1.len, r3.len);
+      if (minRing < 2 || maxRing > minRing * 3.5) continue;
 
-              if (vCheck.valid) {
-                candidates.push({
-                  x: vCheck.refinedX,
-                  y: vCheck.refinedY,
-                  inverted: isCandidateInverted,
-                  size: seg2Len
-                });
-              }
-            }
-          }
-        }
+      const avgRing = (r1.len + r3.len) * 0.5;
+      const coreRatio = r2.len / avgRing;
+      if (coreRatio < 1.3 || coreRatio > 5.0) continue;
+
+      const approxCenterX = Math.round(r2.start + r2.len * 0.5);
+      const isInverted = (r2.sign === 1); // positive core -> inverted (BR)
+
+      // Vertical cross-check
+      const vCheck = crossCheckVertical(
+        rgba,
+        width,
+        height,
+        approxCenterX,
+        y,
+        r2.len,
+        isInverted
+      );
+
+      if (vCheck.valid) {
+        candidates.push({
+          x: vCheck.refinedX,
+          y: vCheck.refinedY,
+          inverted: isInverted,
+          size: r2.len
+        });
       }
     }
   }
 
-  // 3. Cluster candidate detections
+  // 3. Cluster candidates within 30px
   const clusters = clusterCandidates(candidates);
   if (clusters.length < 4) {
     return { found: false, candidates };
   }
 
-  // Find the inverted BR corner and 3 standard corners
-  let brCandidate = null;
-  let standardCandidates = [];
-
-  // Sort clusters by count (number of scanline hits)
+  // Find the top 4 clusters by hit count
   clusters.sort((a, b) => b.count - a.count);
+  const top4 = clusters.slice(0, 4);
 
-  for (const c of clusters) {
-    if (c.inverted && !brCandidate) {
-      brCandidate = c;
-    } else {
-      standardCandidates.push(c);
-    }
-  }
-
-  if (!brCandidate || standardCandidates.length < 3) {
-    // If polarity is slightly noisy, pick top 4 clusters and select BR by maximum invertedScore
-    if (clusters.length < 4) return { found: false, candidates };
-    const top4 = clusters.slice(0, 4);
-    top4.sort((a, b) => b.invertedScore - a.invertedScore);
-    brCandidate = top4[0];
-    standardCandidates = top4.slice(1);
-  }
-
-  if (standardCandidates.length < 3) {
-    return { found: false, candidates };
-  }
+  // Inverted finder BR has positive inverted ratio
+  top4.sort((a, b) => (b.invCount / b.count) - (a.invCount / a.count));
+  const brCandidate = top4[0];
+  const standardCandidates = top4.slice(1);
 
   // 4. Geometrically order corners [TL, TR, BL, BR]
-  const ordered = orderCornersGeometry(standardCandidates.slice(0, 3), brCandidate);
+  const ordered = orderCornersGeometry(standardCandidates, brCandidate);
   if (!ordered) {
     return { found: false, candidates };
   }
@@ -179,7 +153,63 @@ export function findCorners(rgba, width, height, options = {}) {
 }
 
 /**
- * 2D vertical cross check: confirms 1:3:1 pattern and solid core vertically.
+ * Fast ROI tracking for subsequent frames once corner positions are locked.
+ */
+function trackCornersROI(rgba, width, height, prevCorners) {
+  const getCdiff = (x, y) => {
+    const ix = Math.max(0, Math.min(width - 1, Math.round(x)));
+    const iy = Math.max(0, Math.min(height - 1, Math.round(y)));
+    const idx = (iy * width + ix) * 4;
+    return rgba[idx] - rgba[idx + 1];
+  };
+
+  const refined = [];
+  const cornerNames = ['TL', 'TR', 'BL', 'BR'];
+
+  for (let i = 0; i < 4; i++) {
+    const prior = prevCorners[i];
+    const isInverted = (i === 3); // BR is inverted
+    const isCore = (cd) => isInverted ? cd >= 25 : cd <= -25;
+
+    // Search in +/- 20 px around prior
+    const cx = Math.round(prior.x);
+    const cy = Math.round(prior.y);
+
+    let top = cy;
+    while (top > Math.max(2, cy - 25) && isCore(getCdiff(cx, top))) top--;
+    let bot = cy;
+    while (bot < Math.min(height - 3, cy + 25) && isCore(getCdiff(cx, bot))) bot++;
+    const coreH = bot - top - 1;
+    if (coreH < 4) return { found: false };
+
+    const refY = (top + bot + 1) * 0.5;
+    const intY = Math.round(refY);
+
+    let left = cx;
+    while (left > Math.max(2, cx - 25) && isCore(getCdiff(left, intY))) left--;
+    let right = cx;
+    while (right < Math.min(width - 3, cx + 25) && isCore(getCdiff(right, intY))) right++;
+    const coreW = right - left - 1;
+    if (coreW < 4) return { found: false };
+
+    const refX = (left + right + 1) * 0.5;
+    refined.push({ x: refX, y: refY });
+  }
+
+  return {
+    found: true,
+    corners: {
+      TL: refined[0],
+      TR: refined[1],
+      BL: refined[2],
+      BR: refined[3]
+    },
+    orderedCorners: refined
+  };
+}
+
+/**
+ * 2D vertical cross-check: verifies 1:3:1 pattern and solid core vertically with transition skipping.
  */
 function crossCheckVertical(rgba, width, height, cx, cy, expectedCoreW, inverted) {
   const getCdiff = (x, y) => {
@@ -187,79 +217,58 @@ function crossCheckVertical(rgba, width, height, cx, cy, expectedCoreW, inverted
     return rgba[idx] - rgba[idx + 1];
   };
 
-  const minY = Math.max(2, cy - 100);
-  const maxY = Math.min(height - 2, cy + 100);
+  const isCore = (cd) => inverted ? cd >= 25 : cd <= -25;
+  const isRing = (cd) => inverted ? cd <= -25 : cd >= 25;
 
   // 1. Measure core vertically
   let topCore = cy;
-  while (topCore > minY) {
-    const cd = getCdiff(cx, topCore);
-    const inCore = inverted ? (cd >= 25) : (cd <= -25);
-    if (!inCore) break;
-    topCore--;
-  }
-
+  while (topCore > 2 && isCore(getCdiff(cx, topCore))) topCore--;
   let botCore = cy;
-  while (botCore < maxY) {
-    const cd = getCdiff(cx, botCore);
-    const inCore = inverted ? (cd >= 25) : (cd <= -25);
-    if (!inCore) break;
-    botCore++;
-  }
+  while (botCore < height - 3 && isCore(getCdiff(cx, botCore))) botCore++;
 
-  const coreH = botCore - (topCore + 1);
+  const coreH = botCore - topCore - 1;
   if (coreH < 4) return { valid: false };
 
-  // Aspect ratio check: core width and height must match within +/- 40%
-  const ratio = coreH / expectedCoreW;
-  if (ratio < 0.5 || ratio > 2.0) return { valid: false };
+  // Aspect ratio check: core width and height must match within +/- 55%
+  const hwRatio = coreH / expectedCoreW;
+  if (hwRatio < 0.45 || hwRatio > 2.3) return { valid: false };
 
-  // 2. Measure top ring
-  let topRing = topCore;
-  while (topRing > minY) {
-    const cd = getCdiff(cx, topRing);
-    const inRing = inverted ? (cd <= -20) : (cd >= 20);
-    if (!inRing) break;
-    topRing--;
+  // 2. Measure top ring (allowing up to 4 transition pixels)
+  let topRingStart = topCore;
+  while (topRingStart > 2 && Math.abs(getCdiff(cx, topRingStart)) < 25 && (topCore - topRingStart) <= 4) {
+    topRingStart--;
   }
-  const topRingH = (topCore + 1) - (topRing + 1);
-
-  // 3. Measure bottom ring
-  let botRing = botCore;
-  while (botRing < maxY) {
-    const cd = getCdiff(cx, botRing);
-    const inRing = inverted ? (cd <= -20) : (cd >= 20);
-    if (!inRing) break;
-    botRing++;
+  let topRingEnd = topRingStart;
+  while (topRingEnd > 2 && isRing(getCdiff(cx, topRingEnd))) {
+    topRingEnd--;
   }
-  const botRingH = botRing - botCore;
+  const topRingH = topRingStart - topRingEnd;
 
-  // Ring height must be roughly coreH / 3
-  const expectedRingH = coreH / 3.0;
-  if (topRingH < expectedRingH * 0.3 || topRingH > expectedRingH * 2.5) return { valid: false };
-  if (botRingH < expectedRingH * 0.3 || botRingH > expectedRingH * 2.5) return { valid: false };
+  // 3. Measure bottom ring (allowing up to 4 transition pixels)
+  let botRingStart = botCore;
+  while (botRingStart < height - 3 && Math.abs(getCdiff(cx, botRingStart)) < 25 && (botRingStart - botCore) <= 4) {
+    botRingStart++;
+  }
+  let botRingEnd = botRingStart;
+  while (botRingEnd < height - 3 && isRing(getCdiff(cx, botRingEnd))) {
+    botRingEnd++;
+  }
+  const botRingH = botRingEnd - botRingStart;
 
-  // 4. Compute continuous sub-pixel centroid
-  const refinedY = (topCore + botCore + 1) / 2.0;
+  if (topRingH < 2 || botRingH < 2) return { valid: false };
+  if (coreH / topRingH < 1.1 || coreH / topRingH > 6.0) return { valid: false };
+  if (coreH / botRingH < 1.1 || coreH / botRingH > 6.0) return { valid: false };
+
+  // 4. Centroid refinement in continuous image coordinates
+  const refinedY = (topCore + botCore + 1) * 0.5;
   const intY = Math.round(refinedY);
 
-  // Refine horizontal centroid at refinedY
   let leftCore = cx;
-  while (leftCore > Math.max(2, cx - 100)) {
-    const cd = getCdiff(leftCore, intY);
-    const inCore = inverted ? (cd >= 25) : (cd <= -25);
-    if (!inCore) break;
-    leftCore--;
-  }
+  while (leftCore > 2 && isCore(getCdiff(leftCore, intY))) leftCore--;
   let rightCore = cx;
-  while (rightCore < Math.min(width - 2, cx + 100)) {
-    const cd = getCdiff(rightCore, intY);
-    const inCore = inverted ? (cd >= 25) : (cd <= -25);
-    if (!inCore) break;
-    rightCore++;
-  }
+  while (rightCore < width - 3 && isCore(getCdiff(rightCore, intY))) rightCore++;
 
-  const refinedX = (leftCore + rightCore + 1) / 2.0;
+  const refinedX = (leftCore + rightCore + 1) * 0.5;
 
   return {
     valid: true,
@@ -284,8 +293,7 @@ function clusterCandidates(candidates) {
         cl.x = (cl.x * cl.count + cand.x) / (cl.count + 1);
         cl.y = (cl.y * cl.count + cand.y) / (cl.count + 1);
         cl.count++;
-        if (cand.inverted) cl.invertedScore++;
-        else cl.invertedScore--;
+        if (cand.inverted) cl.invCount++;
         matched = true;
         break;
       }
@@ -295,14 +303,9 @@ function clusterCandidates(candidates) {
         x: cand.x,
         y: cand.y,
         count: 1,
-        invertedScore: cand.inverted ? 1 : -1,
-        inverted: cand.inverted
+        invCount: cand.inverted ? 1 : 0
       });
     }
-  }
-
-  for (const cl of clusters) {
-    cl.inverted = cl.invertedScore > 0;
   }
 
   return clusters;

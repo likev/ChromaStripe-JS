@@ -9,7 +9,7 @@ import { applyPSF } from './optics.js';
 import { applyLighting } from './lighting.js';
 import { applyColorTransform } from './color.js';
 import { applySensorNoiseAndQuantize } from './sensor.js';
-import { applyChroma420 } from './codec.js';
+import { applyChroma420, applyDCT } from './codec.js';
 import { renderBackground } from './background.js';
 
 export class SyntheticCamera {
@@ -150,6 +150,11 @@ export class SyntheticCamera {
     // 7. BT.601 4:2:0 chroma subsampling
     if (this.scenario.sensor?.chroma420 !== false) {
       rgba8 = applyChroma420(rgba8, w, h);
+    }
+
+    // 8. 8x8 block DCT quantization (if configured)
+    if (this.scenario.sensor?.dctQuality) {
+      rgba8 = applyDCT(rgba8, w, h, this.scenario.sensor.dctQuality);
     }
 
     const corners = this.geometry.getGroundTruthCorners();

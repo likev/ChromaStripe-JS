@@ -5,9 +5,11 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "test": "node --test test/unit/*.test.js test/integration/*.test.js",
+    "test": "node --test test/unit/*.test.js test/integration/*.test.js && node test/prop.js",
     "test:unit": "node --test test/unit/*.test.js",
     "test:integration": "node --test test/integration/*.test.js",
+    "test:prop": "node test/prop.js",
+    "test:browser": "node tools/serve.js",
     "bench": "node bench/kernels.bench.js && node bench/e2e.bench.js",
     "sim": "node sim/run.js",
     "sim:l0": "node sim/run.js --level 0",

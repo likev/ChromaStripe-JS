@@ -1,0 +1,11 @@
+{
+  "name": "low-res",
+  "camera": { "width": 854, "height": 480, "fps": 30, "readoutMs": 16, "exposureMs": 14, "dropProb": 0 },
+  "display": { "refreshHz": 60, "txHold": 4 },
+  "geometry": { "codeHeightFrac": 0.85, "yawDeg": 3, "pitchDeg": 3, "rollDeg": 1, "k1": -0.02, "shakeX": 0.5, "shakeY": 0.5 },
+  "optics": { "psfSigma": 0.6 },
+  "lighting": { "glare": null, "gradient": 0.05, "vignette": 0.10, "ambient": 0.02 },
+  "color": { "crosstalkDiag": 0.92, "awbGains": [1.0, 1.0, 1.0], "saturation": 0.95, "blackLevel": 4 },
+  "sensor": { "readNoise": 1.2, "shot": 0.01, "chroma420": true },
+  "background": { "distractors": 1 }
+}

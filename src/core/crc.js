@@ -37,6 +37,8 @@ export function crc32(bytes, prevCrc = 0) {
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
 
+export const crc32Incremental = crc32;
+
 /**
  * Computes or continues CRC16-CCITT (init 0xFFFF, poly 0x1021).
  * "123456789" -> 0x29B1
