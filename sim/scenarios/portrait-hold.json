@@ -1,0 +1,11 @@
+{
+  "name": "portrait-hold",
+  "camera": { "width": 720, "height": 1280, "fps": 30, "readoutMs": 20, "exposureMs": 16, "dropProb": 0 },
+  "display": { "refreshHz": 60, "txHold": 4 },
+  "geometry": { "codeHeightFrac": 0.85, "yawDeg": 0, "pitchDeg": 0, "rollDeg": 90, "k1": -0.05, "shakeX": 1.0, "shakeY": 1.0 },
+  "optics": { "psfSigma": 0.8 },
+  "lighting": { "glare": null, "gradient": 0.1, "vignette": 0.15, "ambient": 0.02 },
+  "color": { "crosstalkDiag": 0.90, "awbGains": [1.0, 1.0, 1.0], "saturation": 0.95, "blackLevel": 4 },
+  "sensor": { "readNoise": 1.5, "shot": 0.015, "chroma420": true },
+  "background": { "distractors": 2 }
+}

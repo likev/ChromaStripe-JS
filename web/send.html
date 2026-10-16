@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Send a File — ChromaStripe-JS</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header>
+    <h1>⚡ ChromaStripe-JS / Sender</h1>
+    <nav class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="send.html" class="active">Send</a>
+      <a href="receive.html">Receive</a>
+      <a href="sim.html">Simulation</a>
+    </nav>
+  </header>
+
+  <main>
+    <div id="dropZone" class="drop-zone">
+      <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">📂</div>
+      <h3>Drag & drop any file here, or click to browse</h3>
+      <p style="color:var(--text-muted); margin-top:0.25rem;">Images, PDFs, archives, text, or binary files</p>
+      <input type="file" id="fileInput" style="display:none;">
+    </div>
+
+    <div id="fileStats" class="file-info" style="display:none;">
+      <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem;">
+        <span style="font-weight:bold;" id="fileName">-</span>
+        <span id="fileSize">-</span>
+      </div>
+      <div style="color:var(--text-muted); font-size:0.9rem;">
+        Source Blocks (K): <strong id="blockCount" style="color:var(--text-main);">-</strong> |
+        Est. Time: <strong id="estTime" style="color:var(--text-main);">-</strong>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:1rem; align-items:center; margin: 1rem 0; flex-wrap:wrap;">
+      <button id="startBtn" class="btn" disabled>Start Transmission</button>
+      <button id="pauseBtn" class="btn btn-secondary" style="display:none;">Pause</button>
+      <button id="rotateBtn" class="btn btn-secondary">Rotate (0°)</button>
+      <button id="fullscreenBtn" class="btn btn-secondary">Fullscreen</button>
+
+      <div style="margin-left:auto; display:flex; align-items:center; gap:0.5rem;">
+        <label for="speedSelect" style="color:var(--text-muted); font-size:0.9rem;">Speed:</label>
+        <select id="speedSelect" style="background:var(--card-bg); color:var(--text-main); border:1px solid var(--border-color); padding:0.4rem; border-radius:6px;">
+          <option value="6">Safe (10 fps)</option>
+          <option value="4" selected>Normal (15 fps)</option>
+          <option value="3">Fast (20 fps)</option>
+          <option value="2">Max (30 fps)</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="canvasArea" class="canvas-container">
+      <canvas id="txCanvas" width="800" height="800"></canvas>
+    </div>
+
+    <div id="hud" class="hud-panel" style="display:none;">
+      <div class="hud-item">
+        <span class="hud-label">Phase</span>
+        <span id="hudPhase" class="hud-value">-</span>
+      </div>
+      <div class="hud-item">
+        <span class="hud-label">Droplets Sent</span>
+        <span id="hudSeeds" class="hud-value">0</span>
+      </div>
+      <div class="hud-item">
+        <span class="hud-label">FPS</span>
+        <span id="hudFps" class="hud-value">0.0</span>
+      </div>
+      <div class="hud-item">
+        <span class="hud-label">Elapsed</span>
+        <span id="hudTime" class="hud-value">0:00</span>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="js/send-app.js"></script>
+</body>
+</html>

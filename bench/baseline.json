@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "budgets": {
+    "homographySolveUs": 5.0,
+    "crc32x4Us": 10.0,
+    "pilotCalibrationUs": 20.0,
+    "timingRefinerMs": 0.1,
+    "gridSampleMs": 0.3,
+    "rsParseX4Ms": 0.3,
+    "finderScanMs": 0.5,
+    "coreDecodeTotalMs": 1.5
+  }
+}

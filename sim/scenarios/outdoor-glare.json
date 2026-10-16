@@ -1,0 +1,16 @@
+{
+  "name": "outdoor-glare",
+  "camera": { "width": 1280, "height": 720, "fps": 30, "readoutMs": 15, "exposureMs": 6, "dropProb": 0 },
+  "display": { "refreshHz": 60, "txHold": 4 },
+  "geometry": { "codeHeightFrac": 0.80, "yawDeg": 5, "pitchDeg": 5, "rollDeg": 0, "k1": -0.02, "shakeX": 0.5, "shakeY": 0.5 },
+  "optics": { "psfSigma": 0.8 },
+  "lighting": {
+    "glare": { "intensity": [0.35], "radiusFrac": [0.25] },
+    "gradient": [0.20],
+    "vignette": 0.15,
+    "ambient": [0.08]
+  },
+  "color": { "crosstalkDiag": [0.85], "awbGain": [1.15], "saturation": 0.85, "blackLevel": 8 },
+  "sensor": { "readNoise": 2.0, "shot": 0.02, "chroma420": true },
+  "background": { "distractors": 2 }
+}

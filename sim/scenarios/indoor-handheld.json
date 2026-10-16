@@ -1,0 +1,11 @@
+{
+  "name": "indoor-handheld",
+  "camera": { "width": 1280, "height": 720, "fps": 30, "readoutMs": 20, "exposureMs": 16, "dropProb": 0.02 },
+  "display": { "refreshHz": 60, "txHold": 4 },
+  "geometry": { "codeHeightFrac": 0.75, "yawDeg": 10, "pitchDeg": 8, "rollDeg": 4, "k1": -0.08, "shakeX": 2.0, "shakeY": 2.0 },
+  "optics": { "psfSigma": 1.0 },
+  "lighting": { "glare": null, "gradient": 0.12, "vignette": 0.20, "ambient": 0.03 },
+  "color": { "crosstalkDiag": 0.85, "awbGains": [1.05, 1.0, 1.10], "saturation": 0.90, "blackLevel": 6 },
+  "sensor": { "readNoise": 2.0, "shot": 0.02, "chroma420": true },
+  "background": { "distractors": 3 }
+}

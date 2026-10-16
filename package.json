@@ -1,0 +1,28 @@
+{
+  "name": "chromastripe-js",
+  "version": "1.0.0",
+  "description": "High-speed optical modem in 100% vanilla JavaScript",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test test/unit/*.test.js test/integration/*.test.js",
+    "test:unit": "node --test test/unit/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
+    "bench": "node bench/kernels.bench.js && node bench/e2e.bench.js",
+    "sim": "node sim/run.js",
+    "sim:l0": "node sim/run.js --level 0",
+    "sim:l1": "node sim/run.js --level 1",
+    "sim:l2": "node sim/run.js --level 2 --scenario ideal --frames 30",
+    "serve": "node tools/serve.js",
+    "serve:https": "node tools/serve.js --https"
+  },
+  "keywords": [
+    "optical-modem",
+    "fountain-codes",
+    "computer-vision",
+    "barcode",
+    "vanilla-js"
+  ],
+  "author": "",
+  "license": "MIT"
+}

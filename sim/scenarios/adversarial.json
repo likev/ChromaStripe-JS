@@ -1,0 +1,16 @@
+{
+  "name": "adversarial",
+  "camera": { "width": 1280, "height": 720, "fps": 30, "readoutMs": 25, "exposureMs": 20, "dropProb": 0.05 },
+  "display": { "refreshHz": 60, "txHold": 3 },
+  "geometry": { "codeHeightFrac": 0.65, "yawDeg": 20, "pitchDeg": 18, "rollDeg": 15, "k1": -0.12, "shakeX": 4.0, "shakeY": 4.0 },
+  "optics": { "psfSigma": 1.6 },
+  "lighting": {
+    "glare": { "intensity": [0.55], "radiusFrac": [0.35] },
+    "gradient": [0.30],
+    "vignette": 0.35,
+    "ambient": [0.12]
+  },
+  "color": { "crosstalkDiag": [0.75], "awbGain": [1.25], "saturation": 0.70, "blackLevel": 12 },
+  "sensor": { "readNoise": 3.5, "shot": 0.03, "chroma420": true },
+  "background": { "distractors": 5 }
+}

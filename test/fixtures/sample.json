@@ -1,0 +1,12 @@
+{
+  "name": "ChromaStripe-JS",
+  "version": "1.0.0",
+  "type": "optical-modem",
+  "layers": [
+    "Layer 1: Physical Modulation (RGB Cube)",
+    "Layer 2: Horizontal Micro-Stripes Framing",
+    "Layer 3: Zero-Warp Vision Pipeline",
+    "Layer 4: Systematic LT Fountain Coding",
+    "Layer 5: Pure Vanilla JS Web App"
+  ]
+}

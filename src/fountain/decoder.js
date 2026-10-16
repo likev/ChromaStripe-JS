@@ -1,0 +1,219 @@
+/**
+ * Fountain code decoder: Graph-peeling + Inactivation Gaussian Elimination.
+ */
+
+import { getDropletIndices } from './schedule.js';
+import { solveBinarySystem } from './gauss.js';
+
+export class FountainDecoder {
+  /**
+   * @param {number} K - Total number of source blocks
+   */
+  constructor(K) {
+    this.K = K;
+    this.solved = new Array(K).fill(null);
+    this.isSolved = new Uint8Array(K);
+    this.solvedCount = 0;
+    this.receivedCount = 0;
+    this.seenSeeds = new Set();
+    this.waitingList = []; // Array<{ indices: number[], payload: Uint32Array }>
+  }
+
+  /**
+   * Whether all K source blocks have been decoded.
+   * @returns {boolean}
+   */
+  isComplete() {
+    return this.solvedCount === this.K;
+  }
+
+  /**
+   * Current decode progress.
+   * @returns {{ solvedCount: number, K: number, receivedCount: number, percent: number }}
+   */
+  getProgress() {
+    return {
+      solvedCount: this.solvedCount,
+      K: this.K,
+      receivedCount: this.receivedCount,
+      percent: this.K > 0 ? this.solvedCount / this.K : 1
+    };
+  }
+
+  /**
+   * Ingests one verified droplet.
+   *
+   * @param {number} seed - Droplet seed
+   * @param {Uint32Array} payloadU32 - 112-word droplet payload
+   * @returns {boolean} true if droplet provided new information
+   */
+  addDroplet(seed, payloadU32) {
+    if (this.isComplete()) return false;
+    if (this.seenSeeds.has(seed)) return false;
+
+    this.seenSeeds.add(seed);
+    this.receivedCount++;
+
+    const rawIndices = getDropletIndices(seed, this.K);
+    const payload = new Uint32Array(payloadU32);
+
+    // XOR out all currently solved blocks
+    const activeIndices = [];
+    for (let i = 0; i < rawIndices.length; i++) {
+      const idx = rawIndices[i];
+      if (this.isSolved[idx]) {
+        const solvedBlock = this.solved[idx];
+        for (let w = 0; w < 112; w++) {
+          payload[w] ^= solvedBlock[w];
+        }
+      } else {
+        activeIndices.push(idx);
+      }
+    }
+
+    if (activeIndices.length === 0) {
+      return false; // Redundant droplet
+    }
+
+    if (activeIndices.length === 1) {
+      this._solveBlock(activeIndices[0], payload);
+      this._peelCascade();
+    } else {
+      this.waitingList.push({ indices: activeIndices, payload });
+    }
+
+    // If not complete and we have enough waiting equations, attempt Inactivation GE
+    if (!this.isComplete()) {
+      const numUnknowns = this.K - this.solvedCount;
+      if (this.waitingList.length >= numUnknowns) {
+        this._tryInactivationGE(numUnknowns);
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Marks a block as solved and increments solvedCount.
+   * @private
+   */
+  _solveBlock(blockIdx, payload) {
+    if (this.isSolved[blockIdx]) return;
+    this.solved[blockIdx] = payload;
+    this.isSolved[blockIdx] = 1;
+    this.solvedCount++;
+  }
+
+  /**
+   * Recursively peels any waiting equations that now have degree 1.
+   * @private
+   */
+  _peelCascade() {
+    let progress = true;
+
+    while (progress && !this.isComplete()) {
+      progress = false;
+      const nextWaiting = [];
+
+      for (let i = 0; i < this.waitingList.length; i++) {
+        const eq = this.waitingList[i];
+        const nextIndices = [];
+
+        for (let j = 0; j < eq.indices.length; j++) {
+          const idx = eq.indices[j];
+          if (this.isSolved[idx]) {
+            const block = this.solved[idx];
+            for (let w = 0; w < 112; w++) {
+              eq.payload[w] ^= block[w];
+            }
+          } else {
+            nextIndices.push(idx);
+          }
+        }
+
+        if (nextIndices.length === 0) {
+          // Completely canceled out, discard
+          progress = true;
+        } else if (nextIndices.length === 1) {
+          // Degree-1 reduction!
+          this._solveBlock(nextIndices[0], eq.payload);
+          progress = true;
+        } else {
+          eq.indices = nextIndices;
+          nextWaiting.push(eq);
+        }
+      }
+
+      this.waitingList = nextWaiting;
+    }
+  }
+
+  /**
+   * Attempts bit-packed Gaussian elimination over remaining unknown blocks.
+   * @private
+   */
+  _tryInactivationGE(numUnknowns) {
+    // Map unknown block indices to 0..numUnknowns-1
+    const unknownMap = new Int32Array(this.K).fill(-1);
+    const revUnknownMap = new Int32Array(numUnknowns);
+    let uCount = 0;
+
+    for (let i = 0; i < this.K; i++) {
+      if (!this.isSolved[i]) {
+        unknownMap[i] = uCount;
+        revUnknownMap[uCount] = i;
+        uCount++;
+      }
+    }
+
+    const numWords = Math.ceil(numUnknowns / 32);
+    const equations = [];
+
+    for (let i = 0; i < this.waitingList.length; i++) {
+      const eq = this.waitingList[i];
+      const mask = new Uint32Array(numWords);
+      let valid = false;
+
+      for (let j = 0; j < eq.indices.length; j++) {
+        const uIdx = unknownMap[eq.indices[j]];
+        if (uIdx >= 0) {
+          mask[uIdx >>> 5] |= (1 << (uIdx & 31));
+          valid = true;
+        }
+      }
+
+      if (valid) {
+        equations.push({ mask, rhs: eq.payload });
+      }
+    }
+
+    if (equations.length < numUnknowns) return;
+
+    const res = solveBinarySystem(equations, numUnknowns);
+    if (res.success && res.solution) {
+      for (let i = 0; i < numUnknowns; i++) {
+        const origBlockIdx = revUnknownMap[i];
+        this._solveBlock(origBlockIdx, res.solution[i]);
+      }
+      this.waitingList = [];
+    }
+  }
+
+  /**
+   * Returns all reconstructed source blocks concatenated into a single Uint8Array.
+   * @returns {Uint8Array}
+   */
+  getReconstructedBytes() {
+    if (!this.isComplete()) {
+      throw new Error(`Cannot get bytes: only ${this.solvedCount}/${this.K} blocks solved`);
+    }
+
+    const out = new Uint8Array(this.K * 448);
+    for (let i = 0; i < this.K; i++) {
+      const u32 = this.solved[i];
+      const u8 = new Uint8Array(u32.buffer, u32.byteOffset, 448);
+      out.set(u8, i * 448);
+    }
+    return out;
+  }
+}

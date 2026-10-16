@@ -1,0 +1,11 @@
+{
+  "name": "ideal",
+  "camera": { "width": 800, "height": 800, "fps": 30, "readoutMs": 0, "exposureMs": 10, "dropProb": 0 },
+  "display": { "refreshHz": 60, "txHold": 4 },
+  "geometry": { "codeHeightFrac": 0.95, "yawDeg": 0, "pitchDeg": 0, "rollDeg": 0, "k1": 0, "shakeX": 0, "shakeY": 0 },
+  "optics": { "psfSigma": 0 },
+  "lighting": { "glare": null, "gradient": 0, "vignette": 0, "ambient": 0 },
+  "color": { "crosstalkDiag": 1.0, "awbGains": [1.0, 1.0, 1.0], "saturation": 1.0, "blackLevel": 0 },
+  "sensor": { "readNoise": 0, "shot": 0, "chroma420": false },
+  "background": { "distractors": 0 }
+}

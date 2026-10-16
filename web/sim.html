@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simulation Loopback — ChromaStripe-JS</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header>
+    <h1>⚡ ChromaStripe-JS / Simulator Loopback</h1>
+    <nav class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="send.html">Send</a>
+      <a href="receive.html">Receive</a>
+      <a href="sim.html" class="active">Simulation</a>
+    </nav>
+  </header>
+
+  <main style="max-width:1100px;">
+    <div style="display:grid; grid-template-columns: 1fr 340px; gap:2rem;">
+      <!-- Left side: Simulated Camera Feed & Overlays -->
+      <div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+          <h3>Synthetic Camera View (L2)</h3>
+          <button id="runSimBtn" class="btn">Start Simulation</button>
+        </div>
+
+        <div style="position:relative; background:#000; border-radius:12px; overflow:hidden; border:1px solid var(--border-color);">
+          <canvas id="simCanvas" width="800" height="600" style="width:100%; display:block;"></canvas>
+          <canvas id="simOverlay" width="800" height="600" style="position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none;"></canvas>
+        </div>
+
+        <div class="stripe-indicators" style="margin-top:1rem;">
+          <div id="stripe0" class="stripe-bar" title="Stripe 0"></div>
+          <div id="stripe1" class="stripe-bar" title="Stripe 1"></div>
+          <div id="stripe2" class="stripe-bar" title="Stripe 2"></div>
+          <div id="stripe3" class="stripe-bar" title="Stripe 3"></div>
+        </div>
+
+        <div class="hud-panel">
+          <div class="hud-item">
+            <span class="hud-label">Progress</span>
+            <span id="simProgress" class="hud-value">0%</span>
+          </div>
+          <div class="hud-item">
+            <span class="hud-label">Solved Blocks</span>
+            <span id="simBlocks" class="hud-value">0 / 0</span>
+          </div>
+          <div class="hud-item">
+            <span class="hud-label">Decode Time</span>
+            <span id="simDecodeMs" class="hud-value">0.0 ms</span>
+          </div>
+          <div class="hud-item">
+            <span class="hud-label">Throughput</span>
+            <span id="simSpeed" class="hud-value">0.0 KB/s</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right side: Live Simulation Controls -->
+      <div class="card" style="text-align:left; padding:1.5rem;">
+        <h4 style="margin-bottom:1rem; border-bottom:1px solid var(--border-color); padding-bottom:0.5rem;">Camera & Channel Controls</h4>
+
+        <div class="slider-group">
+          <label><span>Optical Blur (PSF &sigma;)</span><span id="valPsf">0.7 px</span></label>
+          <input type="range" id="slPsf" min="0" max="2.0" step="0.1" value="0.7">
+        </div>
+
+        <div class="slider-group">
+          <label><span>Sensor Read Noise</span><span id="valNoise">1.5 DN</span></label>
+          <input type="range" id="slNoise" min="0" max="6.0" step="0.5" value="1.5">
+        </div>
+
+        <div class="slider-group">
+          <label><span>Specular Glare Intensity</span><span id="valGlare">0%</span></label>
+          <input type="range" id="slGlare" min="0" max="0.6" step="0.05" value="0">
+        </div>
+
+        <div class="slider-group">
+          <label><span>Perspective Yaw Tilt</span><span id="valYaw">5&deg;</span></label>
+          <input type="range" id="slYaw" min="-20" max="20" step="1" value="5">
+        </div>
+
+        <div class="slider-group">
+          <label><span>Perspective Pitch Tilt</span><span id="valPitch">5&deg;</span></label>
+          <input type="range" id="slPitch" min="-20" max="20" step="1" value="5">
+        </div>
+
+        <div class="slider-group">
+          <label><span>Lens Barrel Distortion (k1)</span><span id="valK1">-0.04</span></label>
+          <input type="range" id="slK1" min="-0.12" max="0.02" step="0.01" value="-0.04">
+        </div>
+
+        <div class="slider-group">
+          <label><span>Rolling Shutter Readout</span><span id="valReadout">20 ms</span></label>
+          <input type="range" id="slReadout" min="0" max="30" step="2" value="20">
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { TxSession } from '../src/session/txSession.js';
+    import { RxSession } from '../src/session/rxSession.js';
+    import { FrameDecoder } from '../src/vision/frameDecoder.js';
+    import { SyntheticCamera } from '../sim/camera/index.js';
+    import { getCorpusFile } from '../sim/corpus.js';
+
+    let isRunning = false;
+    let txSession = null;
+    let rxSession = null;
+    let frameDecoder = null;
+    let camera = null;
+    let txFramesMap = new Map();
+
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('simOverlay');
+    const octx = overlay.getContext('2d');
+    const runBtn = document.getElementById('runSimBtn');
+
+    // Sliders
+    const slPsf = document.getElementById('slPsf');
+    const slNoise = document.getElementById('slNoise');
+    const slGlare = document.getElementById('slGlare');
+    const slYaw = document.getElementById('slYaw');
+    const slPitch = document.getElementById('slPitch');
+    const slK1 = document.getElementById('slK1');
+    const slReadout = document.getElementById('slReadout');
+
+    slPsf.oninput = () => document.getElementById('valPsf').textContent = `${slPsf.value} px`;
+    slNoise.oninput = () => document.getElementById('valNoise').textContent = `${slNoise.value} DN`;
+    slGlare.oninput = () => document.getElementById('valGlare').textContent = `${(slGlare.value * 100).toFixed(0)}%`;
+    slYaw.oninput = () => document.getElementById('valYaw').textContent = `${slYaw.value}°`;
+    slPitch.oninput = () => document.getElementById('valPitch').textContent = `${slPitch.value}°`;
+    slK1.oninput = () => document.getElementById('valK1').textContent = slK1.value;
+    slReadout.oninput = () => document.getElementById('valReadout').textContent = `${slReadout.value} ms`;
+
+    runBtn.addEventListener('click', async () => {
+      if (isRunning) return;
+      isRunning = true;
+      runBtn.disabled = true;
+
+      const file = getCorpusFile('C1:64KB');
+      txSession = new TxSession(file.data, { fileName: file.name, scale: 1 });
+      await txSession.init();
+
+      rxSession = new RxSession();
+      frameDecoder = new FrameDecoder();
+
+      txFramesMap.clear();
+      for (let f = 0; f < 50; f++) {
+        txFramesMap.set(f, txSession.getNextFrame());
+      }
+
+      const imgData = ctx.createImageData(800, 600);
+      let frameNo = 0;
+      const tStart = performance.now();
+
+      function step() {
+        if (!isRunning || rxSession.isComplete || frameNo >= 60) {
+          isRunning = false;
+          runBtn.disabled = false;
+          if (rxSession.isComplete) {
+            alert(`Transfer Complete! Verified SHA-256: ${rxSession.result.sha256Verified}`);
+          }
+          return;
+        }
+
+        // Configure camera from sliders
+        camera = new SyntheticCamera({
+          camera: { width: 800, height: 600, fps: 30, readoutMs: parseFloat(slReadout.value), exposureMs: 16 },
+          geometry: { codeHeightFrac: 0.85, yawDeg: parseFloat(slYaw.value), pitchDeg: parseFloat(slPitch.value), rollDeg: 0, k1: parseFloat(slK1.value) },
+          optics: { psfSigma: parseFloat(slPsf.value) },
+          lighting: { glare: parseFloat(slGlare.value) > 0 ? { intensity: [parseFloat(slGlare.value)], radiusFrac: [0.25] } : null, gradient: 0.05, vignette: 0.15 },
+          sensor: { readNoise: parseFloat(slNoise.value), shot: 0.015, chroma420: true }
+        });
+
+        const tC = frameNo * (1000 / 30);
+        const camFrame = camera.captureFrame(tC, txFramesMap);
+
+        imgData.data.set(camFrame.rgba);
+        ctx.putImageData(imgData, 0, 0);
+
+        const tDec0 = performance.now();
+        const decRes = frameDecoder.decode(camFrame.rgba, camFrame.width, camFrame.height);
+        const decMs = performance.now() - tDec0;
+
+        // Render overlay
+        octx.clearRect(0, 0, 800, 600);
+        if (decRes.corners) {
+          const pts = [decRes.corners.TL, decRes.corners.TR, decRes.corners.BR, decRes.corners.BL];
+          octx.beginPath();
+          octx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) octx.lineTo(pts[i].x, pts[i].y);
+          octx.closePath();
+          octx.lineWidth = 2;
+          octx.strokeStyle = '#10b981';
+          octx.stroke();
+        }
+
+        // Stripes
+        for (let s = 0; s < 4; s++) {
+          const bar = document.getElementById(`stripe${s}`);
+          if (decRes.stripes?.[s]?.ok) {
+            bar.className = 'stripe-bar active';
+            rxSession.ingestPacket(decRes.stripes[s].header, decRes.stripes[s].payloadU32);
+          } else {
+            bar.className = 'stripe-bar error';
+          }
+        }
+
+        const p = rxSession.getProgress();
+        document.getElementById('simProgress').textContent = `${(p.percent * 100).toFixed(0)}%`;
+        document.getElementById('simBlocks').textContent = `${p.solvedCount} / ${p.K}`;
+        document.getElementById('simDecodeMs').textContent = `${decMs.toFixed(1)} ms`;
+
+        const elapsed = (performance.now() - tStart) / 1000.0;
+        const kb = (p.solvedCount * 448) / 1024.0;
+        document.getElementById('simSpeed').textContent = `${(kb / Math.max(0.1, elapsed)).toFixed(1)} KB/s`;
+
+        frameNo++;
+        requestAnimationFrame(step);
+      }
+
+      step();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChromaStripe-JS — Optical File Modem</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header>
+    <h1>⚡ ChromaStripe-JS</h1>
+    <nav class="nav-links">
+      <a href="send.html">Send</a>
+      <a href="receive.html">Receive</a>
+      <a href="sim.html">Simulation</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <h2>Air-Gapped Optical File Transfer</h2>
+      <p>High-speed, 100% vanilla JavaScript screen-to-camera file modem. Zero dependencies, zero WASM, zero network required.</p>
+    </div>
+
+    <div class="action-cards">
+      <a href="send.html" class="card">
+        <div class="icon">💻</div>
+        <h3>Send a File</h3>
+        <p>Display your file on screen as high-speed RGB macro-cell frames with systematic fountain coding.</p>
+      </a>
+
+      <a href="receive.html" class="card">
+        <div class="icon">📷</div>
+        <h3>Receive a File</h3>
+        <p>Use your phone or webcam to scan the screen and reconstruct the file bit-for-bit.</p>
+      </a>
+
+      <a href="sim.html" class="card">
+        <div class="icon">🔬</div>
+        <h3>Simulator Loopback</h3>
+        <p>Test the full TX-to-RX pipeline in-browser with synthetic camera noise, blur, and rolling shutter tears.</p>
+      </a>
+    </div>
+
+    <div class="file-info" id="capsCard">
+      <h4 style="margin-bottom:0.75rem;">Browser Capabilities</h4>
+      <div id="capsList" style="font-family:ui-monospace, monospace; font-size:0.9rem; line-height: 1.8;">
+        Detecting features...
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { checkBrowserCapabilities } from './js/ui.js';
+
+    const caps = checkBrowserCapabilities();
+    const list = document.getElementById('capsList');
+    list.innerHTML = `
+      <div>${caps.webCrypto ? '✔' : '✖'} WebCrypto API (SHA-256): ${caps.webCrypto ? 'Supported' : 'Missing'}</div>
+      <div>${caps.compressionStream ? '✔' : '✖'} CompressionStream (deflate-raw): ${caps.compressionStream ? 'Supported' : 'Missing'}</div>
+      <div>${caps.decompressionStream ? '✔' : '✖'} DecompressionStream: ${caps.decompressionStream ? 'Supported' : 'Missing'}</div>
+      <div>${caps.camera ? '✔' : '✖'} Camera Access (getUserMedia): ${caps.camera ? 'Supported' : 'Missing'}</div>
+      <div>${caps.offscreenCanvas ? '✔' : '✖'} OffscreenCanvas: ${caps.offscreenCanvas ? 'Supported' : 'Missing'}</div>
+      <div>${caps.videoFrame ? '✔' : '✖'} VideoFrame API: ${caps.videoFrame ? 'Supported' : 'Missing (falls back to Canvas)'}</div>
+    `;
+  </script>
+</body>
+</html>

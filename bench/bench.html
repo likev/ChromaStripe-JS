@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ChromaStripe-JS — Browser Benchmarks</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem; background: #0f172a; color: #f8fafc; }
+    h1 { margin-bottom: 0.5rem; }
+    button { padding: 0.75rem 1.5rem; font-size: 1rem; border-radius: 8px; border: none; background: #3b82f6; color: white; cursor: pointer; }
+    #log { font-family: ui-monospace, monospace; margin-top: 1.5rem; white-space: pre-wrap; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h1>ChromaStripe-JS In-Browser Benchmarks</h1>
+  <button id="runBtn">Run Benchmarks</button>
+  <div id="log">Click 'Run Benchmarks' to begin...</div>
+
+  <script type="module">
+    import { benchmark } from '../src/core/bench-util.js';
+    import { crc32 } from '../src/core/crc.js';
+    import { solveHomography } from '../src/vision/homography.js';
+
+    document.getElementById('runBtn').addEventListener('click', async () => {
+      const log = document.getElementById('log');
+      log.textContent = 'Running...\n';
+
+      const corners = [{ x: 35, y: 35 }, { x: 765, y: 35 }, { x: 35, y: 765 }, { x: 765, y: 765 }];
+      const bH = await benchmark('Homography solve', () => solveHomography(corners), { iterations: 5000 });
+      log.textContent += `[Homography Solve] Median: ${(bH.medianMs * 1000).toFixed(2)} µs, p95: ${(bH.p95Ms * 1000).toFixed(2)} µs\n`;
+
+      const pkt = new Uint8Array(456);
+      const bCrc = await benchmark('CRC32 x4', () => { crc32(pkt); crc32(pkt); crc32(pkt); crc32(pkt); }, { iterations: 5000 });
+      log.textContent += `[CRC32 x4] Median: ${(bCrc.medianMs * 1000).toFixed(2)} µs, p95: ${(bCrc.p95Ms * 1000).toFixed(2)} µs\n`;
+
+      log.textContent += '\nBrowser benchmark complete!';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "description": "ChromaStripe-JS v1 Golden Test Vectors",
+  "prngHash": "3ae4c5cfbd4fdcf777d1ce6b7bf80ed3d96ab5b636d26467f0531876e1882871",
+  "c32": 985022099,
+  "c16": 2337,
+  "rsParity28": [
+    154, 84, 178, 37, 125, 118, 63, 4, 252, 23, 127, 111, 73, 218, 10, 80, 10, 213, 254, 127, 217, 98, 142, 189, 56, 155, 248, 215
+  ],
+  "pktHash": "4bf685a451061e477f5fc319ae0b3d7d46a0e3775b25ed04103bab59ff9f5c79",
+  "frameHash": "4db30363920e8b8be1fad6c4d9934aac20beb38aacb63816ba343dc4ca1bad21"
+}

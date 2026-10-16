@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ChromaStripe-JS — Browser Test Suite</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem; background: #0f172a; color: #f8fafc; }
+    h1 { margin-bottom: 0.5rem; }
+    .status { font-size: 1.25rem; margin-bottom: 1.5rem; font-weight: bold; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+    #log { font-family: ui-monospace, monospace; font-size: 0.9rem; line-height: 1.6; }
+    .entry { padding: 0.25rem 0.5rem; border-bottom: 1px solid #1e293b; }
+  </style>
+</head>
+<body>
+  <h1>ChromaStripe-JS Test Runner</h1>
+  <div id="status" class="status">Running tests...</div>
+  <div id="log"></div>
+
+  <script type="module">
+    import { test } from './harness.js';
+
+    // Import all unit tests
+    await import('./unit/prng.test.js');
+    await import('./unit/crc.test.js');
+    await import('./unit/bitpack.test.js');
+    await import('./unit/gf256.test.js');
+    await import('./unit/reedsolomon.test.js');
+    await import('./unit/sha256.test.js');
+    await import('./unit/degree.test.js');
+    await import('./unit/schedule.test.js');
+    await import('./unit/gauss.test.js');
+    await import('./unit/fountain.test.js');
+    await import('./unit/layout.test.js');
+    await import('./unit/scrambler.test.js');
+    await import('./unit/packet.test.js');
+    await import('./unit/manifest.test.js');
+    await import('./unit/finder.test.js');
+    await import('./unit/homography.test.js');
+    await import('./unit/timing.test.js');
+    await import('./unit/pilots.test.js');
+    await import('./unit/sampler.test.js');
+    await import('./unit/frameDecoder.test.js');
+    await import('./unit/txSession.test.js');
+    await import('./unit/rxSession.test.js');
+
+    const logDiv = document.getElementById('log');
+    const statusDiv = document.getElementById('status');
+
+    const reporter = {
+      onPass: (name) => {
+        const div = document.createElement('div');
+        div.className = 'entry pass';
+        div.textContent = `✔ ${name}`;
+        logDiv.appendChild(div);
+      },
+      onFail: (name, err) => {
+        const div = document.createElement('div');
+        div.className = 'entry fail';
+        div.textContent = `✖ ${name}: ${err.message}`;
+        logDiv.appendChild(div);
+      }
+    };
+
+    if (test.runAll) {
+      const summary = await test.runAll(reporter);
+      if (summary.failed === 0) {
+        statusDiv.className = 'status pass';
+        statusDiv.textContent = `All ${summary.passed} tests passed!`;
+      } else {
+        statusDiv.className = 'status fail';
+        statusDiv.textContent = `${summary.failed} of ${summary.total} tests failed.`;
+      }
+    }
+  </script>
+</body>
+</html>
