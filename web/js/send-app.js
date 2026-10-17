@@ -3,7 +3,7 @@
  */
 
 import { TxSession } from '../../src/session/txSession.js';
-import { TxCanvasRenderer } from './tx-render.js';
+import { TxCanvasRenderer, computeAutoCorePx, getDimensionsForCorePx } from './tx-render.js';
 import { formatBytes, formatTime } from './ui.js';
 import { getDropletPhase } from '../../src/fountain/schedule.js';
 
@@ -18,35 +18,89 @@ let txHold = 4; // Default: Normal (15 fps on 60 Hz)
 let rotation = 0;
 let startTime = 0;
 let totalFramesSent = 0;
+let selectedSize = 'auto'; // 'auto' or integer string e.g. '5', '6', '7', '8'
 
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const fileStats = document.getElementById('fileStats');
+const changeFileBtn = document.getElementById('changeFileBtn');
 const startBtn = document.getElementById('startBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 const rotateBtn = document.getElementById('rotateBtn');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const speedSelect = document.getElementById('speedSelect');
+const sizeSelect = document.getElementById('sizeSelect');
 const canvas = document.getElementById('txCanvas');
 const hud = document.getElementById('hud');
+
+/**
+ * Updates TX dimensions on session, canvas, renderer, and size selector labels.
+ */
+function updateTxDimensions() {
+  const autoCorePx = computeAutoCorePx({ guardPx: 1 });
+  const autoDims = getDimensionsForCorePx(autoCorePx, 1);
+
+  // Update Auto option label to ALWAYS show the auto-detected resolution
+  if (sizeSelect) {
+    const autoOpt = sizeSelect.querySelector('option[value="auto"]');
+    if (autoOpt) {
+      autoOpt.textContent = `Auto [Fit Screen] (${autoDims.dim}x${autoDims.dim})`;
+    }
+  }
+
+  const corePx = selectedSize !== 'auto' ? parseInt(selectedSize, 10) : autoCorePx;
+  const { guardPx, cellPx, dim } = getDimensionsForCorePx(corePx, 1);
+
+  if (session) {
+    session.corePx = corePx;
+    session.guardPx = guardPx;
+  }
+
+  if (renderer) {
+    renderer.setSize(dim);
+  } else if (canvas) {
+    canvas.width = dim;
+    canvas.height = dim;
+  }
+
+  return { corePx, guardPx, cellPx, dim, autoCorePx, autoDim: autoDims.dim };
+}
 
 // File Selection Handler
 async function handleFile(file) {
   if (!file) return;
 
+  // If a transmission was previously running, stop it cleanly
+  if (isRunning) {
+    isRunning = false;
+    isPaused = false;
+    if (animFrameId) {
+      cancelAnimationFrame(animFrameId);
+      animFrameId = null;
+    }
+    startBtn.style.display = 'inline-block';
+    pauseBtn.style.display = 'none';
+    hud.style.display = 'none';
+  }
+
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
+
+  const { corePx, guardPx } = updateTxDimensions();
 
   session = new TxSession(bytes, {
     fileName: file.name,
     mimeType: file.type || 'application/octet-stream',
     scale: 1,
-    rotation
+    rotation,
+    corePx,
+    guardPx
   });
 
   document.getElementById('fileName').textContent = file.name;
   document.getElementById('fileSize').textContent = formatBytes(bytes.length);
-  fileStats.style.display = 'block';
+  if (dropZone) dropZone.style.display = 'none';
+  if (fileStats) fileStats.style.display = 'block';
 
   await session.init();
 
@@ -55,6 +109,7 @@ async function handleFile(file) {
   document.getElementById('estTime').textContent = formatTime(estSec);
 
   startBtn.disabled = false;
+  updateTxDimensions();
 }
 
 // Drag & drop listeners
@@ -77,6 +132,18 @@ fileInput.addEventListener('change', () => {
   }
 });
 
+if (changeFileBtn) {
+  changeFileBtn.addEventListener('click', () => fileInput.click());
+}
+
+// Size setting
+if (sizeSelect) {
+  sizeSelect.addEventListener('change', () => {
+    selectedSize = sizeSelect.value;
+    updateTxDimensions();
+  });
+}
+
 // Speed setting
 speedSelect.addEventListener('change', () => {
   txHold = parseInt(speedSelect.value, 10);
@@ -92,30 +159,54 @@ rotateBtn.addEventListener('click', () => {
 // Fullscreen & Wake Lock
 fullscreenBtn.addEventListener('click', async () => {
   const container = document.getElementById('canvasArea');
-  if (!document.fullscreenElement) {
-    await container.requestFullscreen().catch(() => {});
+  const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+  if (!fsEl) {
+    if (container.requestFullscreen) {
+      await container.requestFullscreen().catch(() => {});
+    } else if (container.webkitRequestFullscreen) {
+      container.webkitRequestFullscreen();
+    }
     if ('wakeLock' in navigator) {
       navigator.wakeLock.request('screen').catch(() => {});
     }
   } else {
-    document.exitFullscreen().catch(() => {});
+    if (document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
   }
+});
+
+// Fullscreen change listener to update auto-dimensions
+const onFullscreenChange = () => {
+  updateTxDimensions();
+  const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  fullscreenBtn.textContent = isFs ? 'Exit Fullscreen' : 'Fullscreen';
+};
+document.addEventListener('fullscreenchange', onFullscreenChange);
+document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+// Window resize listener to update auto-dimensions
+window.addEventListener('resize', () => {
+  updateTxDimensions();
 });
 
 // Start Transmission Loop
 startBtn.addEventListener('click', () => {
   if (!session) return;
 
-  renderer = new TxCanvasRenderer(canvas, 1);
+  startBtn.style.display = 'none';
+  pauseBtn.style.display = 'inline-block';
+  hud.style.display = 'grid';
+
+  const { dim } = updateTxDimensions();
+  renderer = new TxCanvasRenderer(canvas, 1, dim);
   isRunning = true;
   isPaused = false;
   vsyncCount = 0;
   totalFramesSent = 0;
   startTime = performance.now();
-
-  startBtn.style.display = 'none';
-  pauseBtn.style.display = 'inline-block';
-  hud.style.display = 'grid';
 
   requestAnimationFrame(renderLoop);
 });
@@ -132,7 +223,7 @@ function renderLoop() {
   if (!isPaused) {
     if (vsyncCount % txHold === 0) {
       const frame = session.getNextFrame();
-      renderer.displayFrame(frame.rgba);
+      renderer.displayFrame(frame.rgba, frame.width, frame.height);
       totalFramesSent++;
 
       // Update HUD
@@ -159,3 +250,6 @@ window.addEventListener('keydown', (e) => {
     rotateBtn.click();
   }
 });
+
+// Initial dimension calculation on load
+updateTxDimensions();

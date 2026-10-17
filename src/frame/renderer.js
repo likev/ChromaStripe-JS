@@ -72,19 +72,35 @@ function getFinderColor(u, v) {
  * @param {object} [options]
  * @param {number} [options.scale=1] - Pixel scale s
  * @param {number} [options.rotation=0] - 0 or 90 degrees
+ * @param {number} [options.corePx] - Core pixel size
+ * @param {number} [options.guardPx] - Guard pixel size
+ * @param {number} [options.cellPx] - Cell pixel size
  * @param {Uint8ClampedArray} [options.outRgba] - Optional preallocated buffer
- * @returns {{ width: number, height: number, rgba: Uint8ClampedArray }}
+ * @returns {{ width: number, height: number, rgba: Uint8ClampedArray, cellPx: number, corePx: number, guardPx: number }}
  */
 export function renderFrame(stripePackets, options = {}) {
-  const scale = Math.max(1, (options.scale | 0) || 1);
   const rotation = options.rotation === 90 ? 90 : 0;
-  const cellPx = CELL_BASE_PX * scale;
-  const corePx = CORE_BASE_PX * scale;
-  const guardPx = GUARD_BASE_PX * scale;
+  let corePx, guardPx, cellPx;
+  if (options.corePx !== undefined && options.corePx !== null) {
+    corePx = Math.max(1, options.corePx | 0);
+    guardPx = options.guardPx !== undefined && options.guardPx !== null ? Math.max(0, options.guardPx | 0) : GUARD_BASE_PX;
+    cellPx = options.cellPx !== undefined && options.cellPx !== null ? Math.max(corePx + 2 * guardPx, options.cellPx | 0) : (corePx + 2 * guardPx);
+  } else if (options.cellPx !== undefined && options.cellPx !== null) {
+    cellPx = Math.max(1, options.cellPx | 0);
+    guardPx = options.guardPx !== undefined && options.guardPx !== null ? Math.max(0, options.guardPx | 0) : GUARD_BASE_PX;
+    corePx = Math.max(1, cellPx - 2 * guardPx);
+  } else {
+    const scale = Math.max(1, (options.scale | 0) || 1);
+    guardPx = options.guardPx !== undefined && options.guardPx !== null ? Math.max(0, options.guardPx | 0) : GUARD_BASE_PX * scale;
+    corePx = CORE_BASE_PX * scale;
+    cellPx = corePx + 2 * guardPx;
+  }
   const imgDim = GRID_SIZE * cellPx;
 
   const totalBytes = imgDim * imgDim * 4;
-  const rgba = options.outRgba || new Uint8ClampedArray(totalBytes);
+  const rgba = (options.outRgba && options.outRgba.length === totalBytes)
+    ? options.outRgba
+    : new Uint8ClampedArray(totalBytes);
   // Fill entire background with black
   rgba.fill(0);
   // Set alpha channel to 255
@@ -184,5 +200,5 @@ export function renderFrame(stripePackets, options = {}) {
     }
   }
 
-  return { width: imgDim, height: imgDim, rgba };
+  return { width: imgDim, height: imgDim, rgba, cellPx, corePx, guardPx };
 }

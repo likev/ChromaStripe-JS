@@ -20,6 +20,8 @@ export class TxSession {
    * @param {string} [options.mimeType='application/octet-stream']
    * @param {number} [options.scale=1]
    * @param {number} [options.rotation=0]
+   * @param {number} [options.corePx]
+   * @param {number} [options.guardPx]
    */
   constructor(fileData, options = {}) {
     this.fileData = fileData;
@@ -27,6 +29,8 @@ export class TxSession {
     this.mimeType = options.mimeType || 'application/octet-stream';
     this.scale = options.scale || 1;
     this.rotation = options.rotation || 0;
+    this.corePx = options.corePx !== undefined ? options.corePx : undefined;
+    this.guardPx = options.guardPx !== undefined ? options.guardPx : undefined;
 
     this.isInitialized = false;
     this.K = 0;
@@ -139,9 +143,11 @@ export class TxSession {
       );
     }
 
-    const { width, height, rgba } = renderFrame(packets, {
+    const renderRes = renderFrame(packets, {
       scale: this.scale,
       rotation: this.rotation,
+      corePx: this.corePx,
+      guardPx: this.guardPx,
       outRgba
     });
 
@@ -149,9 +155,12 @@ export class TxSession {
       frameNo: f,
       seeds,
       packets,
-      width,
-      height,
-      rgba
+      width: renderRes.width,
+      height: renderRes.height,
+      rgba: renderRes.rgba,
+      cellPx: renderRes.cellPx,
+      corePx: renderRes.corePx,
+      guardPx: renderRes.guardPx
     };
   }
 }

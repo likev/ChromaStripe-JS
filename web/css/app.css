@@ -177,6 +177,37 @@ main {
   max-width: fit-content;
 }
 
+.canvas-container:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  margin: 0;
+  border-radius: 0;
+  background: #808080;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.canvas-container:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  margin: 0;
+  border-radius: 0;
+  background: #808080;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.canvas-container:fullscreen canvas,
+.canvas-container:-webkit-full-screen canvas {
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 40px);
+  object-fit: contain;
+}
+
 canvas {
   image-rendering: pixelated;
   max-width: 100%;

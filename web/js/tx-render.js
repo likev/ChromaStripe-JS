@@ -1,30 +1,177 @@
 /**
- * Canvas renderer adapter for TX screen display.
+ * Canvas renderer adapter and auto-sizing helper for TX screen display.
  */
+
+/**
+ * Computes the largest integer corePx that fits available screen/viewport width and height
+ * without scrolling, considering fullscreen vs windowed mode.
+ *
+ * @param {object} [options]
+ * @param {number} [options.guardPx=1] - Guard pixel width per cell side (default 1)
+ * @param {number} [options.minCorePx=3] - Minimum corePx (default 3, 400x400)
+ * @param {number} [options.maxCorePx=10] - Maximum corePx (default 10, 960x960)
+ * @param {number} [options.viewportWidth] - Explicit width for testing
+ * @param {number} [options.viewportHeight] - Explicit height for testing
+ * @param {boolean} [options.isFullscreen] - Explicit fullscreen state for testing
+ * @param {number} [options.containerPadding] - Explicit quiet zone padding
+ * @returns {number} Largest integer corePx fitting the viewport
+ */
+export function computeAutoCorePx(options = {}) {
+  const guardPx = options.guardPx !== undefined ? options.guardPx : 1;
+  const minCore = options.minCorePx !== undefined ? options.minCorePx : 3;
+  const maxCore = options.maxCorePx !== undefined ? options.maxCorePx : 10;
+
+  const hasDom = typeof window !== 'undefined' && typeof document !== 'undefined';
+  const isFs = options.isFullscreen !== undefined
+    ? !!options.isFullscreen
+    : (hasDom ? !!(document.fullscreenElement || document.webkitFullscreenElement) : false);
+
+  const vw = options.viewportWidth !== undefined
+    ? options.viewportWidth
+    : (hasDom ? (window.innerWidth || (window.screen ? window.screen.width : 1366)) : 1366);
+
+  const vh = options.viewportHeight !== undefined
+    ? options.viewportHeight
+    : (hasDom ? (window.innerHeight || (window.screen ? window.screen.height : 768)) : 768);
+
+  let availW, availH;
+
+  if (isFs) {
+    let padX = options.containerPadding !== undefined ? options.containerPadding : 40;
+    let padY = options.containerPadding !== undefined ? options.containerPadding : 40;
+    if (hasDom && options.containerPadding === undefined) {
+      const container = document.getElementById('canvasArea');
+      if (container) {
+        const cs = window.getComputedStyle(container);
+        padX = (parseFloat(cs.paddingLeft) || 20) + (parseFloat(cs.paddingRight) || 20);
+        padY = (parseFloat(cs.paddingTop) || 20) + (parseFloat(cs.paddingBottom) || 20);
+      }
+    }
+    availW = Math.max(0, vw - padX);
+    availH = Math.max(0, vh - padY);
+  } else {
+    let padX = options.containerPadding !== undefined ? options.containerPadding : 40;
+    let padY = options.containerPadding !== undefined ? options.containerPadding : 40;
+    let topOffset = 180;
+    let belowOffset = 50;
+
+    if (hasDom) {
+      const container = document.getElementById('canvasArea');
+      if (container) {
+        const cs = window.getComputedStyle(container);
+        if (options.containerPadding === undefined) {
+          padX = (parseFloat(cs.paddingLeft) || 20) + (parseFloat(cs.paddingRight) || 20);
+          padY = (parseFloat(cs.paddingTop) || 20) + (parseFloat(cs.paddingBottom) || 20);
+        }
+
+        const rect = container.getBoundingClientRect();
+        topOffset = rect.top + window.scrollY;
+
+        const mb = parseFloat(cs.marginBottom) || 24;
+        const hudEl = document.getElementById('hud');
+        // Factor in HUD height if visible, or anticipate ~72px when hidden for active transmission
+        const hudH = hudEl ? ((hudEl.style.display !== 'none' && hudEl.offsetHeight > 0) ? hudEl.offsetHeight + 16 : 72) : 0;
+
+        const mainEl = document.querySelector('main');
+        const mainCs = mainEl ? window.getComputedStyle(mainEl) : null;
+        const mainPb = mainCs ? (parseFloat(mainCs.paddingBottom) || 32) : 32;
+
+        belowOffset = mb + hudH + mainPb;
+      }
+
+      const mainEl = document.querySelector('main');
+      let maxContentW = Math.min(vw - 64, 836);
+      if (mainEl) {
+        const mainCs = window.getComputedStyle(mainEl);
+        const pl = parseFloat(mainCs.paddingLeft) || 32;
+        const pr = parseFloat(mainCs.paddingRight) || 32;
+        maxContentW = Math.max(0, mainEl.clientWidth - pl - pr);
+      }
+      availW = Math.max(0, maxContentW - padX);
+      availH = Math.max(0, vh - topOffset - padY - belowOffset);
+    } else {
+      availW = Math.max(0, Math.min(vw - 64, 836) - padX);
+      availH = Math.max(0, vh - topOffset - padY - belowOffset);
+    }
+  }
+
+  const maxDim = Math.min(availW, availH);
+  const maxCellPx = Math.floor(maxDim / 80);
+  const corePx = maxCellPx - 2 * guardPx;
+
+  return Math.max(minCore, Math.min(maxCore, corePx));
+}
+
+/**
+ * Calculates cellPx and total image dimension for a given corePx and guardPx.
+ *
+ * @param {number} corePx
+ * @param {number} [guardPx=1]
+ * @returns {{ corePx: number, guardPx: number, cellPx: number, dim: number }}
+ */
+export function getDimensionsForCorePx(corePx, guardPx = 1) {
+  const cellPx = corePx + 2 * guardPx;
+  const dim = 80 * cellPx;
+  return { corePx, guardPx, cellPx, dim };
+}
 
 export class TxCanvasRenderer {
   /**
    * @param {HTMLCanvasElement} canvas
-   * @param {number} [scale=1]
+   * @param {number|object} [scaleOrOptions=1]
+   * @param {number} [dim]
    */
-  constructor(canvas, scale = 1) {
+  constructor(canvas, scaleOrOptions = 1, dim = null) {
     this.canvas = canvas;
-    this.scale = scale;
     this.ctx = canvas.getContext('2d', { willReadFrequently: false });
-    this.ctx.imageSmoothingEnabled = false;
+    if (this.ctx) {
+      this.ctx.imageSmoothingEnabled = false;
+    }
 
-    this.dim = 800 * scale;
-    this.canvas.width = this.dim;
-    this.canvas.height = this.dim;
-    this.imgData = this.ctx.createImageData(this.dim, this.dim);
+    let targetDim = 800;
+    if (typeof scaleOrOptions === 'object' && scaleOrOptions !== null) {
+      this.scale = scaleOrOptions.scale || 1;
+      targetDim = scaleOrOptions.dim || scaleOrOptions.width || (800 * this.scale);
+    } else {
+      this.scale = scaleOrOptions || 1;
+      targetDim = dim || (800 * this.scale);
+    }
+
+    this.dim = targetDim;
+    this.setSize(targetDim);
+  }
+
+  /**
+   * Updates canvas dimensions and pre-allocates matching ImageData.
+   *
+   * @param {number} dim
+   */
+  setSize(dim) {
+    if (this.dim === dim && this.imgData && this.canvas.width === dim && this.canvas.height === dim) {
+      return;
+    }
+    this.dim = dim;
+    this.canvas.width = dim;
+    this.canvas.height = dim;
+    if (this.ctx) {
+      this.ctx.imageSmoothingEnabled = false;
+      this.imgData = this.ctx.createImageData(dim, dim);
+    }
   }
 
   /**
    * Updates canvas display with rendered RGBA buffer.
+   * Dynamically resizes if buffer dimensions differ.
    *
    * @param {Uint8ClampedArray} rgba
+   * @param {number} [width]
+   * @param {number} [height]
    */
-  displayFrame(rgba) {
+  displayFrame(rgba, width, height) {
+    const frameDim = width || (height || Math.round(Math.sqrt(rgba.length / 4)));
+    if (frameDim !== this.dim || !this.imgData || this.imgData.data.length !== rgba.length) {
+      this.setSize(frameDim);
+    }
     this.imgData.data.set(rgba);
     this.ctx.putImageData(this.imgData, 0, 0);
   }
