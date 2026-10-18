@@ -32,11 +32,14 @@ export class FountainDecoder {
    * @returns {{ solvedCount: number, K: number, receivedCount: number, percent: number }}
    */
   getProgress() {
+    const distinctCollected = this.solvedCount + Math.min(this.waitingList.length, this.K - this.solvedCount);
     return {
       solvedCount: this.solvedCount,
+      waitingCount: this.waitingList.length,
+      distinctCount: distinctCollected,
       K: this.K,
       receivedCount: this.receivedCount,
-      percent: this.K > 0 ? this.solvedCount / this.K : 1
+      percent: this.K > 0 ? (this.isComplete() ? 1.0 : Math.min(0.99, distinctCollected / this.K)) : 1
     };
   }
 

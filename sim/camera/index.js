@@ -124,26 +124,26 @@ export class SyntheticCamera {
       glare: this.scenario.lighting?.glare ? {
         x: w * 0.7,
         y: h * 0.3,
-        radius: (this.scenario.lighting.glare.radiusFrac?.[0] ?? 0.2) * h,
-        intensity: this.scenario.lighting.glare.intensity?.[0] ?? 0.3
+        radius: (Array.isArray(this.scenario.lighting.glare.radiusFrac) ? this.scenario.lighting.glare.radiusFrac[0] : (this.scenario.lighting.glare.radiusFrac ?? 0.2)) * h,
+        intensity: Array.isArray(this.scenario.lighting.glare.intensity) ? this.scenario.lighting.glare.intensity[0] : (this.scenario.lighting.glare.intensity ?? 0.3)
       } : null,
-      gradient: this.scenario.lighting?.gradient?.[0] ?? 0.1,
-      vignette: this.scenario.lighting?.vignette ?? 0.2,
-      ambient: this.scenario.lighting?.ambient?.[0] ?? 0.02
+      gradient: Array.isArray(this.scenario.lighting?.gradient) ? this.scenario.lighting.gradient[0] : (this.scenario.lighting?.gradient ?? 0.1),
+      vignette: Array.isArray(this.scenario.lighting?.vignette) ? this.scenario.lighting.vignette[0] : (this.scenario.lighting?.vignette ?? 0.2),
+      ambient: Array.isArray(this.scenario.lighting?.ambient) ? this.scenario.lighting.ambient[0] : (this.scenario.lighting?.ambient ?? 0.02)
     });
 
     // 5. Color transform (crosstalk, AWB, saturation, black level)
     const coloredBuf = applyColorTransform(litBuf, w, h, {
-      crosstalkDiag: this.scenario.color?.crosstalkDiag?.[0] ?? 0.90,
-      awbGains: this.scenario.color?.awbGain ? [this.scenario.color.awbGain[0], 1.0, 1.05] : [1.0, 1.0, 1.0],
-      saturation: this.scenario.color?.saturation?.[0] ?? 1.0,
+      crosstalkDiag: Array.isArray(this.scenario.color?.crosstalkDiag) ? this.scenario.color.crosstalkDiag[0] : (this.scenario.color?.crosstalkDiag ?? 0.90),
+      awbGains: this.scenario.color?.awbGains || (Array.isArray(this.scenario.color?.awbGain) ? [this.scenario.color.awbGain[0], 1.0, 1.05] : [1.0, 1.0, 1.0]),
+      saturation: Array.isArray(this.scenario.color?.saturation) ? this.scenario.color.saturation[0] : (this.scenario.color?.saturation ?? 1.0),
       blackLevel: this.scenario.color?.blackLevel ?? 4
     });
 
     // 6. Sensor noise and quantization to sRGB RGBA8
     let rgba8 = applySensorNoiseAndQuantize(coloredBuf, w, h, {
-      readNoise: this.scenario.sensor?.readNoise?.[0] ?? 1.5,
-      shotNoise: this.scenario.sensor?.shot ?? 0.015,
+      readNoise: Array.isArray(this.scenario.sensor?.readNoise) ? this.scenario.sensor.readNoise[0] : (this.scenario.sensor?.readNoise ?? 1.5),
+      shotNoise: Array.isArray(this.scenario.sensor?.shot) ? this.scenario.sensor.shot[0] : (this.scenario.sensor?.shot ?? 0.015),
       seed: Math.floor(tC) & 0x7FFFFFFF
     });
 

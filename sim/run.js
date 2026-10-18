@@ -165,16 +165,20 @@ async function runL2() {
   const startTime = Date.now();
 
   for (let f = 0; f < maxFrames && !rx.isComplete; f++) {
-    // Generate TX frame dynamically
-    if (!txFramesMap.has(f)) {
-      txFramesMap.set(f, tx.getNextFrame());
+    const tC = f * (1000 / camera.fps);
+    const blendTop = camera.timing.getTxFrameBlend(tC, 0, camera.camH);
+    const blendBot = camera.timing.getTxFrameBlend(tC, camera.camH - 1, camera.camH);
+    const maxTxNeeded = Math.max(...blendTop.map(b => b.frameIdx), ...blendBot.map(b => b.frameIdx));
+
+    while (tx.frameNo <= maxTxNeeded) {
+      const nextTx = tx.getNextFrame();
+      txFramesMap.set(nextTx.frameNo, nextTx);
     }
-    // Prune stale TX frames to avoid unbounded memory
-    if (f > 15) {
-      txFramesMap.delete(f - 15);
+    const minTxNeeded = Math.min(...blendTop.map(b => b.frameIdx), ...blendBot.map(b => b.frameIdx));
+    if (minTxNeeded > 10) {
+      txFramesMap.delete(minTxNeeded - 10);
     }
 
-    const tC = f * (1000 / camera.fps);
     const camFrame = camera.captureFrame(tC, txFramesMap);
 
     const decRes = frameDecoder.decode(camFrame.rgba, camFrame.width, camFrame.height);

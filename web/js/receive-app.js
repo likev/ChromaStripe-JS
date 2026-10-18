@@ -14,6 +14,7 @@ let offscreenCtx = null;
 let isCapturing = false;
 let workerBusy = false;
 let startTime = 0;
+let rxStartTime = 0;
 let totalBytesReceived = 0;
 
 const startBtn = document.getElementById('startCameraBtn');
@@ -39,13 +40,18 @@ worker.onmessage = (e) => {
 
   // Update progress HUD
   if (progress) {
-    document.getElementById('rxBlocks').textContent = `${progress.solvedCount} / ${progress.K}`;
+    const totalCollected = progress.solvedCount + (progress.waitingCount || 0);
+    const distinct = progress.distinctCount !== undefined ? progress.distinctCount : Math.min(progress.K, totalCollected);
+    document.getElementById('rxBlocks').textContent = `${progress.solvedCount} / ${progress.K} (${totalCollected} eq)`;
     document.getElementById('rxPercent').textContent = `${(progress.percent * 100).toFixed(0)}%`;
     document.getElementById('progressBar').style.width = `${(progress.percent * 100).toFixed(0)}%`;
 
-    if (progress.solvedCount > 0 && startTime > 0) {
-      const elapsed = (performance.now() - startTime) / 1000.0;
-      const kb = (progress.solvedCount * 448) / 1024.0;
+    if (distinct > 0) {
+      if (!rxStartTime) {
+        rxStartTime = performance.now();
+      }
+      const elapsed = (performance.now() - rxStartTime) / 1000.0;
+      const kb = (distinct * 448) / 1024.0;
       document.getElementById('rxSpeed').textContent = `${(kb / Math.max(0.1, elapsed)).toFixed(1)} KB/s`;
     }
   }
@@ -170,6 +176,7 @@ function startReceiving() {
 
   isCapturing = true;
   startTime = performance.now();
+  rxStartTime = 0;
   scheduleNextFrame();
 }
 
@@ -207,20 +214,39 @@ function captureLoop() {
   if (!isCapturing) return;
 
   // Backpressure: drop frame if worker is still processing previous frame
-  if (!workerBusy && video.readyState >= 2) {
-    workerBusy = true;
-    offscreenCtx.drawImage(video, 0, 0);
-    const imgData = offscreenCtx.getImageData(0, 0, video.videoWidth, video.videoHeight);
+  if (!workerBusy && video && video.readyState >= 2) {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
 
-    worker.postMessage(
-      {
-        type: 'decode_frame',
-        rgba: imgData.data,
-        width: video.videoWidth,
-        height: video.videoHeight
-      },
-      [imgData.data.buffer] // Transferable buffer
-    );
+    if (vw > 0 && vh > 0) {
+      if (offscreenCanvas.width !== vw || offscreenCanvas.height !== vh) {
+        offscreenCanvas.width = vw;
+        offscreenCanvas.height = vh;
+      }
+      if (overlayCanvas.width !== vw || overlayCanvas.height !== vh) {
+        overlayCanvas.width = vw;
+        overlayCanvas.height = vh;
+      }
+
+      workerBusy = true;
+      try {
+        offscreenCtx.drawImage(video, 0, 0);
+        const imgData = offscreenCtx.getImageData(0, 0, vw, vh);
+
+        worker.postMessage(
+          {
+            type: 'decode_frame',
+            rgba: imgData.data,
+            width: vw,
+            height: vh
+          },
+          [imgData.data.buffer] // Transferable buffer
+        );
+      } catch (err) {
+        console.error('Frame capture error:', err);
+        workerBusy = false;
+      }
+    }
   }
 
   scheduleNextFrame();

@@ -254,14 +254,204 @@ function forneyCorrection(codeword, syndromes, lambda, errPos) {
 }
 
 /**
+ * Polynomial multiplication in GF(256).
+ */
+function polyMul(p, q) {
+  const res = new Uint8Array(p.length + q.length - 1);
+  for (let i = 0; i < p.length; i++) {
+    if (!p[i]) continue;
+    for (let j = 0; j < q.length; j++) {
+      if (!q[j]) continue;
+      res[i + j] ^= gfMul(p[i], q[j]);
+    }
+  }
+  return res;
+}
+
+/**
+ * Error-and-Erasure Reed-Solomon Decoder using Forney modified syndromes.
+ * Corrects up to 2t + e <= nsym (where e = erasures.length, t = errors.length).
+ *
+ * @param {Uint8Array} codeword
+ * @param {number} nsym
+ * @param {number[]} [erasures=[]]
+ * @param {boolean} [inPlace=false]
+ * @returns {{ ok: boolean, corrected: number, codeword: Uint8Array }}
+ */
+export function rsDecodeErrata(codeword, nsym, erasures = [], inPlace = false) {
+  const cw = inPlace ? codeword : new Uint8Array(codeword);
+  const n = cw.length;
+  const uniqueErasures = [...new Set(erasures)].filter(p => p >= 0 && p < n);
+  const numErasures = uniqueErasures.length;
+
+  if (numErasures > nsym) {
+    return { ok: false, corrected: 0, codeword: cw };
+  }
+
+  const syndromes = rsSyndromes(cw, nsym);
+  if (!syndromes) {
+    return { ok: true, corrected: 0, codeword: cw };
+  }
+
+  if (numErasures === 0) {
+    return rsDecode(cw, nsym, true);
+  }
+
+  // 1. Compute erasure locator polynomial Gamma(x) = prod_{i=0}^{numErasures-1} (1 - X_i * x)
+  let gamma = new Uint8Array([1]);
+  for (let i = 0; i < numErasures; i++) {
+    const pos = uniqueErasures[i];
+    const power = (n - 1 - pos) % 255;
+    const Xi = EXP[power];
+    gamma = polyMul(gamma, new Uint8Array([1, Xi]));
+  }
+
+  // 2. Compute Forney modified syndromes: Xi(x) = (S(x) * Gamma(x)) mod x^nsym
+  const modSyn = new Uint8Array(nsym);
+  for (let i = 0; i < nsym; i++) {
+    let sum = 0;
+    for (let j = 0; j <= i && j < gamma.length; j++) {
+      if (gamma[j] && syndromes[i - j]) {
+        sum ^= gfMul(gamma[j], syndromes[i - j]);
+      }
+    }
+    modSyn[i] = sum;
+  }
+
+  // 3. Berlekamp-Massey on modified syndromes to find error locator lambda_err(x)
+  let c = [1];
+  let b = [1];
+  let l = 0;
+  let m = 1;
+  let bVal = 1;
+
+  for (let step = numErasures; step < nsym; step++) {
+    let d = modSyn[step];
+    for (let i = 1; i <= l; i++) {
+      if (c[i] && (step - i) >= 0) {
+        d ^= gfMul(c[i], modSyn[step - i]);
+      }
+    }
+
+    if (d === 0) {
+      m++;
+    } else {
+      const t = c.slice();
+      const coeff = gfDiv(d, bVal);
+      while (c.length < b.length + m) c.push(0);
+      for (let i = 0; i < b.length; i++) {
+        if (b[i]) c[i + m] ^= gfMul(coeff, b[i]);
+      }
+      if (2 * l <= step - numErasures) {
+        l = step + 1 - numErasures - l;
+        b = t;
+        bVal = d;
+        m = 1;
+      } else {
+        m++;
+      }
+    }
+  }
+
+  while (c.length > 0 && c[c.length - 1] === 0) c.pop();
+  const numErrors = c.length - 1;
+
+  // Bound check: 2 * numErrors + numErasures <= nsym
+  if (2 * numErrors + numErasures > nsym) {
+    return { ok: false, corrected: 0, codeword: cw };
+  }
+
+  // 4. Combined locator poly: Lambda(x) = Gamma(x) * Lambda_err(x)
+  const lambda = polyMul(gamma, new Uint8Array(c));
+
+  // 5. Find error positions (roots of Lambda_err)
+  const allPositions = uniqueErasures.slice();
+  if (numErrors > 0) {
+    const lambdaErr = new Uint8Array(c);
+    const errPos = [];
+    for (let pos = 0; pos < n; pos++) {
+      if (uniqueErasures.includes(pos)) continue;
+      const expVal = (255 - ((n - 1 - pos) % 255)) % 255;
+      const invX = EXP[expVal];
+      let sum = 1;
+      let xPow = 1;
+      for (let j = 1; j <= numErrors; j++) {
+        xPow = gfMul(xPow, invX);
+        if (lambdaErr[j]) sum ^= gfMul(lambdaErr[j], xPow);
+      }
+      if (sum === 0) {
+        errPos.push(pos);
+      }
+    }
+    if (errPos.length !== numErrors) {
+      return { ok: false, corrected: 0, codeword: cw };
+    }
+    allPositions.push(...errPos);
+  }
+
+  // 6. Forney algorithm to compute error values using combined Lambda(x)
+  const omega = new Uint8Array(nsym);
+  for (let i = 0; i < nsym; i++) {
+    let sum = 0;
+    for (let j = 0; j <= i && j < lambda.length; j++) {
+      if (lambda[j] && syndromes[i - j]) {
+        sum ^= gfMul(lambda[j], syndromes[i - j]);
+      }
+    }
+    omega[i] = sum;
+  }
+
+  for (let idx = 0; idx < allPositions.length; idx++) {
+    const pos = allPositions[idx];
+    const power = (n - 1 - pos) % 255;
+    const Xi = EXP[power];
+    const invXi = EXP[(255 - power) % 255];
+
+    let num = 0;
+    let invXiPow = 1;
+    for (let j = 0; j < nsym; j++) {
+      if (omega[j]) num ^= gfMul(omega[j], invXiPow);
+      invXiPow = gfMul(invXiPow, invXi);
+    }
+
+    let den = 0;
+    let invXiKMinus1 = 1;
+    for (let k = 1; k < lambda.length; k += 2) {
+      if (lambda[k]) den ^= gfMul(lambda[k], invXiKMinus1);
+      if (k + 2 < lambda.length) {
+        invXiKMinus1 = gfMul(invXiKMinus1, gfMul(invXi, invXi));
+      }
+    }
+
+    if (den === 0) return { ok: false, corrected: 0, codeword: cw };
+    const errVal = gfMul(Xi, gfDiv(num, den));
+    cw[pos] ^= errVal;
+  }
+
+  // Verify syndromes are zero
+  const post = rsSyndromes(cw, nsym);
+  if (post !== null) {
+    return { ok: false, corrected: 0, codeword: cw };
+  }
+
+  return { ok: true, corrected: allPositions.length, codeword: cw };
+}
+
+/**
  * Decodes Reed-Solomon codeword in-place or returns a corrected copy.
+ * Supports optional erasure list via Forney modified syndromes.
  *
  * @param {Uint8Array} codeword - Codeword of length n
  * @param {number} nsym - Number of parity symbols
  * @param {boolean} [inPlace=false]
+ * @param {number[]} [erasures=[]] - Optional known erasure positions
  * @returns {{ ok: boolean, corrected: number, codeword: Uint8Array }}
  */
-export function rsDecode(codeword, nsym, inPlace = false) {
+export function rsDecode(codeword, nsym, inPlace = false, erasures = []) {
+  if (erasures && erasures.length > 0) {
+    return rsDecodeErrata(codeword, nsym, erasures, inPlace);
+  }
+
   const cw = inPlace ? codeword : new Uint8Array(codeword);
   const syndromes = rsSyndromes(cw, nsym);
 

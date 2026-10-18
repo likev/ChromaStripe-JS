@@ -19,8 +19,8 @@ export class PilotCalibrator {
     this.H = H;
     this.timingRefiner = timingRefiner;
 
-    // 4x4 pilot lattice coordinates
-    this.pilotCoords = [9.5, 29.5, 49.5, 69.5];
+    // 4x4 pilot lattice coordinates (centers of 2x2 pilot blocks)
+    this.pilotCoords = [10.0, 30.0, 50.0, 70.0];
 
     // 16 entries of [Tr, Tg, Tb]
     this.thresholds = new Float32Array(16 * 3);
@@ -28,7 +28,7 @@ export class PilotCalibrator {
   }
 
   _samplePilots(rgba) {
-    const sample3x3 = (u, v) => {
+    const samplePilotCore = (u, v) => {
       let du = 0, dv = 0;
       if (this.timingRefiner) {
         const off = this.timingRefiner.getOffset(
@@ -39,25 +39,29 @@ export class PilotCalibrator {
         dv = off.dv;
       }
       const { x, y } = projectH(this.H, u + du, v + dv);
-      const ix = Math.round(x);
-      const iy = Math.round(y);
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
 
-      let rSum = 0, gSum = 0, bSum = 0, count = 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        const sy = iy + dy;
-        if (sy < 0 || sy >= this.height) continue;
-        const rowOffset = sy * this.width;
-        for (let dx = -1; dx <= 1; dx++) {
-          const sx = ix + dx;
-          if (sx < 0 || sx >= this.width) continue;
-          const idx = (rowOffset + sx) * 4;
-          rSum += rgba[idx];
-          gSum += rgba[idx + 1];
-          bSum += rgba[idx + 2];
-          count++;
-        }
+      if (x0 < 0 || x0 >= this.width - 1 || y0 < 0 || y0 >= this.height - 1) {
+        return [128, 128, 128];
       }
-      return count > 0 ? [rSum / count, gSum / count, bSum / count] : [128, 128, 128];
+
+      const fx = x - x0;
+      const fy = y - y0;
+      const o00 = (y0 * this.width + x0) * 4;
+      const o10 = o00 + 4;
+      const o01 = ((y0 + 1) * this.width + x0) * 4;
+      const o11 = o01 + 4;
+
+      const w00 = (1.0 - fx) * (1.0 - fy);
+      const w10 = fx * (1.0 - fy);
+      const w01 = (1.0 - fx) * fy;
+      const w11 = fx * fy;
+
+      const r = w00 * rgba[o00] + w10 * rgba[o10] + w01 * rgba[o01] + w11 * rgba[o11];
+      const g = w00 * rgba[o00 + 1] + w10 * rgba[o10 + 1] + w01 * rgba[o01 + 1] + w11 * rgba[o11 + 1];
+      const b = w00 * rgba[o00 + 2] + w10 * rgba[o10 + 2] + w01 * rgba[o01 + 2] + w11 * rgba[o11 + 2];
+      return [r, g, b];
     };
 
     const offsets = [9, 29, 49, 69];
@@ -70,23 +74,25 @@ export class PilotCalibrator {
         // 4 cells of pilot block:
         // [W (r, c)    | K (r, c+1)]
         // [C (r+1, c)  | M (r+1, c+1)]
-        const [wR, wG, wB] = sample3x3(cBase + 0.5, rBase + 0.5);
-        const [kR, kG, kB] = sample3x3(cBase + 1.5, rBase + 0.5);
-        const [cR, cG, cB] = sample3x3(cBase + 0.5, rBase + 1.5);
-        const [mR, mG, mB] = sample3x3(cBase + 1.5, rBase + 1.5);
+        const [wR, wG, wB] = samplePilotCore(cBase + 0.5, rBase + 0.5);
+        const [kR, kG, kB] = samplePilotCore(cBase + 1.5, rBase + 0.5);
+        const [cR, cG, cB] = samplePilotCore(cBase + 0.5, rBase + 1.5);
+        const [mR, mG, mB] = samplePilotCore(cBase + 1.5, rBase + 1.5);
 
         // High and low channel levels
         const rHi = (wR + mR) * 0.5;
         const rLo = (kR + cR) * 0.5;
         const gHi = (wG + cG) * 0.5;
-        const gLo = (kG + mG) * 0.5;
+        const gLeak = Math.max(0, 0.25 * (mG - kG));
+        const gLo = (kG + mG) * 0.5 + gLeak;
         const bHi = (wB + cB + mB) / 3.0;
-        const bLo = kB;
+        const bLeak = Math.max(0, 0.25 * ((rLo - kR) + (gLo - kG)));
+        const bLo = kB + bLeak;
 
-        // Thresholds
-        const Tr = (rHi - rLo > 30) ? (rHi + rLo) * 0.5 : 128;
-        const Tg = (gHi - gLo > 30) ? (gHi + gLo) * 0.5 : 128;
-        const Tb = (bHi - bLo > 30) ? (bHi + bLo) * 0.5 : 128;
+        // Thresholds: midpoint between high and low levels
+        const Tr = (rHi - rLo > 15) ? (rHi + rLo) * 0.5 : ((rHi + rLo) * 0.5 || 128);
+        const Tg = (gHi - gLo > 15) ? (gHi + gLo) * 0.5 : ((gHi + gLo) * 0.5 || 128);
+        const Tb = (bHi - bLo > 15) ? (bHi + bLo) * 0.5 : ((bHi + bLo) * 0.5 || 128);
 
         const pIdx = (rIdx * 4 + cIdx) * 3;
         this.thresholds[pIdx] = Tr;

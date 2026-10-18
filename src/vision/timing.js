@@ -47,22 +47,21 @@ export class TimingRefiner {
       return 0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2];
     };
 
-    // 1. Search for radial lens distortion coefficient k1 that maximizes timing track contrast
-    let bestK1 = 0;
-    let maxContrast = -Infinity;
+    const normScale = Math.min(cx, cy);
 
-    for (let k = -0.12; k <= 0.02; k += 0.015) {
+    // 1. Search for radial lens distortion coefficient k1 that maximizes timing track contrast
+    const evalContrast = (k) => {
       const undist = (pt) => {
-        const nx = (pt.x - cx) / cx;
-        const ny = (pt.y - cy) / cy;
+        const nx = (pt.x - cx) / normScale;
+        const ny = (pt.y - cy) / normScale;
         const f = 1.0 / (1.0 + k * (nx * nx + ny * ny));
-        return { x: cx + nx * f * cx, y: cy + ny * f * cy };
+        return { x: cx + nx * f * normScale, y: cy + ny * f * normScale };
       };
       const dist = (pt) => {
-        const nx = (pt.x - cx) / cx;
-        const ny = (pt.y - cy) / cy;
+        const nx = (pt.x - cx) / normScale;
+        const ny = (pt.y - cy) / normScale;
         const f = 1.0 + k * (nx * nx + ny * ny);
-        return { x: cx + nx * f * cx, y: cy + ny * f * cy };
+        return { x: cx + nx * f * normScale, y: cy + ny * f * normScale };
       };
 
       const H_u = solveHomography([
@@ -71,25 +70,36 @@ export class TimingRefiner {
         undist(this.corners[2]),
         undist(this.corners[3])
       ]);
-      if (!H_u) continue;
+      if (!H_u) return -Infinity;
 
       let contrast = 0;
-      // Top and bottom timing edges (step 2 for speed)
-      for (let c = 8; c <= 71; c += 2) {
+      // Top and bottom timing edges (step 1 to sample both white and dark cells)
+      for (let c = 8; c <= 71; c++) {
         const s = ((c - 8) & 1) === 0 ? 1 : -1;
         const pT = dist(projectH(H_u, c + 0.5, 0.5));
         const pB = dist(projectH(H_u, c + 0.5, 79.5));
         contrast += s * getLuma(pT.x, pT.y) + s * getLuma(pB.x, pB.y);
       }
       // Left and right timing edges
-      for (let r = 8; r <= 71; r += 2) {
+      for (let r = 8; r <= 71; r++) {
         const s = ((r - 8) & 1) === 0 ? 1 : -1;
         const pL = dist(projectH(H_u, 0.5, r + 0.5));
         const pR = dist(projectH(H_u, 79.5, r + 0.5));
         contrast += s * getLuma(pL.x, pL.y) + s * getLuma(pR.x, pR.y);
       }
+      return contrast;
+    };
 
-      if (contrast > maxContrast) {
+    // Baseline contrast at k = 0 (flat homography)
+    const contrast0 = evalContrast(0);
+    let bestK1 = 0;
+    let maxContrast = contrast0;
+    const minThreshold = contrast0 + Math.max(100, Math.abs(contrast0) * 0.025);
+
+    for (let k = -0.12; k <= 0.02; k += 0.015) {
+      if (Math.abs(k) < 1e-4) continue;
+      const contrast = evalContrast(k);
+      if (contrast > maxContrast && contrast > minThreshold) {
         maxContrast = contrast;
         bestK1 = k;
       }
@@ -131,16 +141,16 @@ export class TimingRefiner {
     // 3. Compute undistorted homography and populate offset field
     if (Math.abs(bestK1) > 0.005) {
       const undist = (pt) => {
-        const nx = (pt.x - cx) / cx;
-        const ny = (pt.y - cy) / cy;
+        const nx = (pt.x - cx) / normScale;
+        const ny = (pt.y - cy) / normScale;
         const f = 1.0 / (1.0 + bestK1 * (nx * nx + ny * ny));
-        return { x: cx + nx * f * cx, y: cy + ny * f * cy };
+        return { x: cx + nx * f * normScale, y: cy + ny * f * normScale };
       };
       const dist = (pt) => {
-        const nx = (pt.x - cx) / cx;
-        const ny = (pt.y - cy) / cy;
+        const nx = (pt.x - cx) / normScale;
+        const ny = (pt.y - cy) / normScale;
         const f = 1.0 + bestK1 * (nx * nx + ny * ny);
-        return { x: cx + nx * f * cx, y: cy + ny * f * cy };
+        return { x: cx + nx * f * normScale, y: cy + ny * f * normScale };
       };
 
       const H_undist = solveHomography([

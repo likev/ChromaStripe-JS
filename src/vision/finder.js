@@ -36,25 +36,29 @@ export function findCorners(rgba, width, height, options = {}) {
   const candidates = [];
   const T = 35; // Chrominance threshold for Magenta (+T) vs Cyan (-T)
 
-  const getCdiff = (x, y) => {
+  const getPixelSign = (x, y) => {
     const idx = (y * width + x) * 4;
-    return rgba[idx] - rgba[idx + 1];
+    const r = rgba[idx];
+    const g = rgba[idx + 1];
+    const b = rgba[idx + 2];
+    const cd = r - g;
+    // Magenta: cd >= T, Blue high and above green
+    if (cd >= T && b >= 30 && b > g + 10) return 1;
+    // Cyan: cd <= -T, Blue high and above red
+    if (cd <= -T && b >= 30 && b > r + 10) return -1;
+    return 0;
   };
 
-  const minRow = 5;
-  const maxRow = height - 5;
+  const minRow = 2;
+  const maxRow = height - 2;
 
   for (let y = minRow; y < maxRow; y += scanStep) {
     // Run-length encode signs along row y
-    // +1: cdiff >= T (Magenta)
-    // -1: cdiff <= -T (Cyan)
-    //  0: neutral / transition
     const runs = [];
     let curSign = 0, runLen = 0, runStart = 0;
 
-    for (let x = 4; x < width - 4; x++) {
-      const cd = getCdiff(x, y);
-      const s = cd >= T ? 1 : (cd <= -T ? -1 : 0);
+    for (let x = 0; x < width; x++) {
+      const s = getPixelSign(x, y);
       if (s === curSign) {
         runLen++;
       } else {
@@ -67,22 +71,26 @@ export function findCorners(rgba, width, height, options = {}) {
     if (runLen > 0) runs.push({ sign: curSign, start: runStart, len: runLen });
 
     // Look for 1:3:1 sequence:
-    // Standard: +1 (ring) -> [transition <= 4px] -> -1 (core) -> [transition <= 4px] -> +1 (ring)
-    // Inverted: -1 (ring) -> [transition <= 4px] -> +1 (core) -> [transition <= 4px] -> -1 (ring)
+    // Standard: +1 (ring) -> [transition <= 2px] -> -1 (core) -> [transition <= 2px] -> +1 (ring)
+    // Inverted: -1 (ring) -> [transition <= 2px] -> +1 (core) -> [transition <= 2px] -> -1 (ring)
     for (let i = 0; i < runs.length; i++) {
       const r1 = runs[i];
       if (r1.sign === 0) continue;
       const targetCoreSign = -r1.sign;
 
       let j = i + 1;
-      if (j < runs.length && runs[j].sign === 0 && runs[j].len <= 5) j++;
+      if (j < runs.length && runs[j].sign === 0 && runs[j].len <= 2) j++;
       if (j >= runs.length || runs[j].sign !== targetCoreSign) continue;
       const r2 = runs[j]; // core
 
       let k = j + 1;
-      if (k < runs.length && runs[k].sign === 0 && runs[k].len <= 5) k++;
+      if (k < runs.length && runs[k].sign === 0 && runs[k].len <= 2) k++;
       if (k >= runs.length || runs[k].sign !== r1.sign) continue;
       const r3 = runs[k]; // ring
+
+      // Check outer dark/neutral border (at least 2px)
+      if (i === 0 || runs[i - 1].sign !== 0 || runs[i - 1].len < 2) continue;
+      if (k + 1 >= runs.length || runs[k + 1].sign !== 0 || runs[k + 1].len < 2) continue;
 
       // Check ring thicknesses and 1:3:1 ratio
       const minRing = Math.min(r1.len, r3.len);
@@ -118,36 +126,91 @@ export function findCorners(rgba, width, height, options = {}) {
     }
   }
 
-  // 3. Cluster candidates within 30px
+  // 3. Cluster candidates
   const clusters = clusterCandidates(candidates);
   if (clusters.length < 4) {
     return { found: false, candidates };
   }
 
-  // Find the top 4 clusters by hit count
-  clusters.sort((a, b) => b.count - a.count);
-  const top4 = clusters.slice(0, 4);
+  // Separate standard corners (TL, TR, BL) from inverted corner (BR)
+  const standardClusters = clusters.filter(c => !c.inverted);
+  const invertedClusters = clusters.filter(c => c.inverted);
 
-  // Inverted finder BR has positive inverted ratio
-  top4.sort((a, b) => (b.invCount / b.count) - (a.invCount / a.count));
-  const brCandidate = top4[0];
-  const standardCandidates = top4.slice(1);
+  if (standardClusters.length < 3 || invertedClusters.length < 1) {
+    return { found: false, candidates };
+  }
 
-  // 4. Geometrically order corners [TL, TR, BL, BR]
-  const ordered = orderCornersGeometry(standardCandidates, brCandidate);
-  if (!ordered) {
+  standardClusters.sort((a, b) => b.count - a.count);
+  invertedClusters.sort((a, b) => b.count - a.count);
+
+  const topStandards = standardClusters.slice(0, 6);
+  const topInverteds = invertedClusters.slice(0, 3);
+
+  let bestOrdered = null;
+  let bestScore = -Infinity;
+
+  for (const br of topInverteds) {
+    for (let i = 0; i < topStandards.length; i++) {
+      for (let j = i + 1; j < topStandards.length; j++) {
+        for (let k = j + 1; k < topStandards.length; k++) {
+          const three = [topStandards[i], topStandards[j], topStandards[k]];
+          const ordered = orderCornersGeometry(three, br);
+          if (!ordered) continue;
+
+          const [tl, tr, bl] = [ordered[0], ordered[1], ordered[2]];
+          const dTop = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+          const dBot = Math.hypot(br.x - bl.x, br.y - bl.y);
+          const dLeft = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+          const dRight = Math.hypot(br.x - tr.x, br.y - tr.y);
+
+          const minSide = Math.min(dTop, dBot, dLeft, dRight);
+          const maxSide = Math.max(dTop, dBot, dLeft, dRight);
+          if (minSide < 30 || minSide / maxSide < 0.35) continue;
+
+          // Convexity check: consecutive edge cross products must have same sign
+          const cross = (ax, ay, bx, by) => ax * by - ay * bx;
+          const c0 = cross(tr.x - tl.x, tr.y - tl.y, br.x - tr.x, br.y - tr.y);
+          const c1 = cross(br.x - tr.x, br.y - tr.y, bl.x - br.x, bl.y - br.y);
+          const c2 = cross(bl.x - br.x, bl.y - br.y, tl.x - bl.x, tl.y - bl.y);
+          const c3 = cross(tl.x - bl.x, tl.y - bl.y, tr.x - tl.x, tr.y - tl.y);
+
+          if ((c0 > 0 && (c1 <= 0 || c2 <= 0 || c3 <= 0)) ||
+              (c0 < 0 && (c1 >= 0 || c2 >= 0 || c3 >= 0))) {
+            continue;
+          }
+
+          // Shoelace area
+          const area = 0.5 * Math.abs(
+            (tl.x * tr.y - tr.x * tl.y) +
+            (tr.x * br.y - br.x * tr.y) +
+            (br.x * bl.y - bl.x * br.y) +
+            (bl.x * tl.y - tl.x * bl.y)
+          );
+          if (area < 1500) continue;
+
+          const score = (tl.count + tr.count + bl.count + br.count) * 1000 + area;
+          if (score > bestScore) {
+            bestScore = score;
+            bestOrdered = ordered;
+          }
+        }
+      }
+    }
+  }
+
+  if (!bestOrdered) {
     return { found: false, candidates };
   }
 
   return {
     found: true,
     corners: {
-      TL: ordered[0],
-      TR: ordered[1],
-      BL: ordered[2],
-      BR: ordered[3]
+      TL: bestOrdered[0],
+      TR: bestOrdered[1],
+      BL: bestOrdered[2],
+      BR: bestOrdered[3]
     },
-    orderedCorners: ordered,
+    orderedCorners: bestOrdered,
     candidates
   };
 }
@@ -156,44 +219,84 @@ export function findCorners(rgba, width, height, options = {}) {
  * Fast ROI tracking for subsequent frames once corner positions are locked.
  */
 function trackCornersROI(rgba, width, height, prevCorners) {
-  const getCdiff = (x, y) => {
-    const ix = Math.max(0, Math.min(width - 1, Math.round(x)));
-    const iy = Math.max(0, Math.min(height - 1, Math.round(y)));
-    const idx = (iy * width + ix) * 4;
-    return rgba[idx] - rgba[idx + 1];
-  };
-
   const refined = [];
-  const cornerNames = ['TL', 'TR', 'BL', 'BR'];
 
   for (let i = 0; i < 4; i++) {
     const prior = prevCorners[i];
     const isInverted = (i === 3); // BR is inverted
-    const isCore = (cd) => isInverted ? cd >= 25 : cd <= -25;
 
-    // Search in +/- 20 px around prior
+    const isCore = (x, y) => {
+      const ix = Math.max(0, Math.min(width - 1, Math.round(x)));
+      const iy = Math.max(0, Math.min(height - 1, Math.round(y)));
+      const idx = (iy * width + ix) * 4;
+      const r = rgba[idx], g = rgba[idx + 1], b = rgba[idx + 2];
+      const cd = r - g;
+      if (b < 30) return false;
+      return isInverted ? (cd >= 25 && b > g + 10) : (cd <= -25 && b > r + 10);
+    };
+
     const cx = Math.round(prior.x);
     const cy = Math.round(prior.y);
 
-    let top = cy;
-    while (top > Math.max(2, cy - 25) && isCore(getCdiff(cx, top))) top--;
-    let bot = cy;
-    while (bot < Math.min(height - 3, cy + 25) && isCore(getCdiff(cx, bot))) bot++;
+    let startX = cx, startY = cy, found = false;
+    if (isCore(cx, cy)) {
+      found = true;
+    } else {
+      for (let d = 1; d <= 12 && !found; d += 2) {
+        for (let dy = -d; dy <= d && !found; dy += 2) {
+          for (let dx = -d; dx <= d && !found; dx += 2) {
+            const sx = cx + dx;
+            const sy = cy + dy;
+            if (sx >= 4 && sx < width - 4 && sy >= 4 && sy < height - 4) {
+              if (isCore(sx, sy)) {
+                startX = sx;
+                startY = sy;
+                found = true;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!found) return { found: false };
+
+    let top = startY;
+    while (top > Math.max(2, startY - 30) && isCore(startX, top)) top--;
+    let bot = startY;
+    while (bot < Math.min(height - 3, startY + 30) && isCore(startX, bot)) bot++;
     const coreH = bot - top - 1;
-    if (coreH < 4) return { found: false };
+    if (coreH < 4 || coreH > 150) return { found: false };
 
     const refY = (top + bot + 1) * 0.5;
     const intY = Math.round(refY);
 
-    let left = cx;
-    while (left > Math.max(2, cx - 25) && isCore(getCdiff(left, intY))) left--;
-    let right = cx;
-    while (right < Math.min(width - 3, cx + 25) && isCore(getCdiff(right, intY))) right++;
+    let left = startX;
+    while (left > Math.max(2, startX - 30) && isCore(left, intY)) left--;
+    let right = startX;
+    while (right < Math.min(width - 3, startX + 30) && isCore(right, intY)) right++;
     const coreW = right - left - 1;
-    if (coreW < 4) return { found: false };
+    if (coreW < 4 || coreW > 150) return { found: false };
+
+    const hwRatio = coreH / coreW;
+    if (hwRatio < 0.4 || hwRatio > 2.5) return { found: false };
 
     const refX = (left + right + 1) * 0.5;
-    refined.push({ x: refX, y: refY });
+
+    // Use vertical cross-check to verify ring structure
+    const vCheck = crossCheckVertical(
+      rgba,
+      width,
+      height,
+      Math.round(refX),
+      Math.round(refY),
+      coreW,
+      isInverted
+    );
+
+    if (!vCheck.valid) {
+      return { found: false };
+    }
+    refined.push({ x: vCheck.refinedX, y: vCheck.refinedY });
   }
 
   return {
@@ -212,19 +315,29 @@ function trackCornersROI(rgba, width, height, prevCorners) {
  * 2D vertical cross-check: verifies 1:3:1 pattern and solid core vertically with transition skipping.
  */
 function crossCheckVertical(rgba, width, height, cx, cy, expectedCoreW, inverted) {
-  const getCdiff = (x, y) => {
+  const isCore = (x, y) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return false;
     const idx = (y * width + x) * 4;
-    return rgba[idx] - rgba[idx + 1];
+    const r = rgba[idx], g = rgba[idx + 1], b = rgba[idx + 2];
+    const cd = r - g;
+    if (b < 30) return false;
+    return inverted ? (cd >= 25 && b > g + 10) : (cd <= -25 && b > r + 10);
   };
 
-  const isCore = (cd) => inverted ? cd >= 25 : cd <= -25;
-  const isRing = (cd) => inverted ? cd <= -25 : cd >= 25;
+  const isRing = (x, y) => {
+    if (x < 0 || x >= width || y < 0 || y >= height) return false;
+    const idx = (y * width + x) * 4;
+    const r = rgba[idx], g = rgba[idx + 1], b = rgba[idx + 2];
+    const cd = r - g;
+    if (b < 30) return false;
+    return inverted ? (cd <= -25 && b > r + 10) : (cd >= 25 && b > g + 10);
+  };
 
   // 1. Measure core vertically
   let topCore = cy;
-  while (topCore > 2 && isCore(getCdiff(cx, topCore))) topCore--;
+  while (topCore > 2 && isCore(cx, topCore)) topCore--;
   let botCore = cy;
-  while (botCore < height - 3 && isCore(getCdiff(cx, botCore))) botCore++;
+  while (botCore < height - 3 && isCore(cx, botCore)) botCore++;
 
   const coreH = botCore - topCore - 1;
   if (coreH < 4) return { valid: false };
@@ -235,22 +348,22 @@ function crossCheckVertical(rgba, width, height, cx, cy, expectedCoreW, inverted
 
   // 2. Measure top ring (allowing up to 4 transition pixels)
   let topRingStart = topCore;
-  while (topRingStart > 2 && Math.abs(getCdiff(cx, topRingStart)) < 25 && (topCore - topRingStart) <= 4) {
+  while (topRingStart > 2 && !isRing(cx, topRingStart) && (topCore - topRingStart) <= 4) {
     topRingStart--;
   }
   let topRingEnd = topRingStart;
-  while (topRingEnd > 2 && isRing(getCdiff(cx, topRingEnd))) {
+  while (topRingEnd > 2 && isRing(cx, topRingEnd)) {
     topRingEnd--;
   }
   const topRingH = topRingStart - topRingEnd;
 
   // 3. Measure bottom ring (allowing up to 4 transition pixels)
   let botRingStart = botCore;
-  while (botRingStart < height - 3 && Math.abs(getCdiff(cx, botRingStart)) < 25 && (botRingStart - botCore) <= 4) {
+  while (botRingStart < height - 3 && !isRing(cx, botRingStart) && (botRingStart - botCore) <= 4) {
     botRingStart++;
   }
   let botRingEnd = botRingStart;
-  while (botRingEnd < height - 3 && isRing(getCdiff(cx, botRingEnd))) {
+  while (botRingEnd < height - 3 && isRing(cx, botRingEnd)) {
     botRingEnd++;
   }
   const botRingH = botRingEnd - botRingStart;
@@ -259,14 +372,31 @@ function crossCheckVertical(rgba, width, height, cx, cy, expectedCoreW, inverted
   if (coreH / topRingH < 1.1 || coreH / topRingH > 6.0) return { valid: false };
   if (coreH / botRingH < 1.1 || coreH / botRingH > 6.0) return { valid: false };
 
+  // Check outer dark/neutral border (at least 1px)
+  let topDarkH = 0;
+  let pY = topRingEnd;
+  while (pY >= 0 && !isRing(cx, pY) && !isCore(cx, pY) && topDarkH < 1) {
+    topDarkH++;
+    pY--;
+  }
+  if (topDarkH < 1) return { valid: false };
+
+  let botDarkH = 0;
+  pY = botRingEnd;
+  while (pY < height && !isRing(cx, pY) && !isCore(cx, pY) && botDarkH < 1) {
+    botDarkH++;
+    pY++;
+  }
+  if (botDarkH < 1) return { valid: false };
+
   // 4. Centroid refinement in continuous image coordinates
   const refinedY = (topCore + botCore + 1) * 0.5;
   const intY = Math.round(refinedY);
 
   let leftCore = cx;
-  while (leftCore > 2 && isCore(getCdiff(leftCore, intY))) leftCore--;
+  while (leftCore > 2 && isCore(leftCore, intY)) leftCore--;
   let rightCore = cx;
-  while (rightCore < width - 3 && isCore(getCdiff(rightCore, intY))) rightCore++;
+  while (rightCore < width - 3 && isCore(rightCore, intY)) rightCore++;
 
   const refinedX = (leftCore + rightCore + 1) * 0.5;
 
@@ -282,18 +412,21 @@ function crossCheckVertical(rgba, width, height, cx, cy, expectedCoreW, inverted
  */
 function clusterCandidates(candidates) {
   const clusters = [];
-  const MERGE_DIST2 = 30 * 30;
 
   for (const cand of candidates) {
     let matched = false;
+    const mergeDist = Math.max(12, cand.size * 1.5);
+    const mergeDist2 = mergeDist * mergeDist;
+
     for (const cl of clusters) {
+      if (cl.inverted !== cand.inverted) continue;
       const dx = cl.x - cand.x;
       const dy = cl.y - cand.y;
-      if (dx * dx + dy * dy < MERGE_DIST2) {
+      if (dx * dx + dy * dy < mergeDist2) {
         cl.x = (cl.x * cl.count + cand.x) / (cl.count + 1);
         cl.y = (cl.y * cl.count + cand.y) / (cl.count + 1);
+        cl.size = (cl.size * cl.count + cand.size) / (cl.count + 1);
         cl.count++;
-        if (cand.inverted) cl.invCount++;
         matched = true;
         break;
       }
@@ -302,14 +435,16 @@ function clusterCandidates(candidates) {
       clusters.push({
         x: cand.x,
         y: cand.y,
+        size: cand.size,
         count: 1,
-        invCount: cand.inverted ? 1 : 0
+        inverted: cand.inverted
       });
     }
   }
 
   return clusters;
 }
+
 
 /**
  * Orders 4 corners into [TL, TR, BL, BR] using BR as reference.

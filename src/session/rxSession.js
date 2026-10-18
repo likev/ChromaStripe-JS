@@ -37,9 +37,22 @@ export class RxSession {
       this.sessionId = header.sessionId;
       this.K = header.K;
       this.fountainDecoder = new FountainDecoder(this.K);
+      this.newSessionCount = 0;
     } else if (header.sessionId !== this.sessionId) {
       // Packet from a different session
-      return false;
+      this.newSessionCount = (this.newSessionCount || 0) + 1;
+      if (this.newSessionCount >= 4) {
+        // Automatically switch to new session if sender restarted with a different file
+        this.reset();
+        this.sessionId = header.sessionId;
+        this.K = header.K;
+        this.fountainDecoder = new FountainDecoder(this.K);
+        this.newSessionCount = 0;
+      } else {
+        return false;
+      }
+    } else {
+      this.newSessionCount = 0;
     }
 
     const added = this.fountainDecoder.addDroplet(header.seed, payloadU32);
@@ -112,7 +125,7 @@ export class RxSession {
    */
   getProgress() {
     if (!this.fountainDecoder) {
-      return { isComplete: false, solvedCount: 0, K: 0, percent: 0, receivedCount: 0 };
+      return { isComplete: false, solvedCount: 0, waitingCount: 0, distinctCount: 0, K: 0, percent: 0, receivedCount: 0 };
     }
     const p = this.fountainDecoder.getProgress();
     return {

@@ -102,7 +102,7 @@ export function buildPacket(header, payloadU32, outPacket) {
  *   corrected?: number
  * }}
  */
-export function parsePacket(rawBytes, expectedStripeIdx = -1) {
+export function parsePacket(rawBytes, expectedStripeIdx = -1, byteMargins = null) {
   if (rawBytes.length !== PACKET_TOTAL_BYTES) {
     return { ok: false, error: 'INVALID_PACKET_LENGTH' };
   }
@@ -136,13 +136,51 @@ export function parsePacket(rawBytes, expectedStripeIdx = -1) {
     cw1.set(testBuf.subarray(488, 515), 153);
     cw2.set(testBuf.subarray(515, 542), 153);
 
-    const r0 = rsDecode(cw0, 28, true);
+    // Interleaved byte margins for each codeword
+    let m0 = null, m1 = null, m2 = null;
+    if (byteMargins && byteMargins.length === PACKET_TOTAL_BYTES) {
+      m0 = new Float32Array(182);
+      m1 = new Float32Array(180);
+      m2 = new Float32Array(180);
+      for (let i = 0; i < 460; i++) {
+        const mod = i % 3;
+        const div = Math.floor(i / 3);
+        if (mod === 0) m0[div] = byteMargins[i];
+        else if (mod === 1) m1[div] = byteMargins[i];
+        else m2[div] = byteMargins[i];
+      }
+      for (let i = 0; i < 28; i++) m0[154 + i] = byteMargins[460 + i];
+      for (let i = 0; i < 27; i++) m1[153 + i] = byteMargins[488 + i];
+      for (let i = 0; i < 27; i++) m2[153 + i] = byteMargins[515 + i];
+    }
+
+    // Helper to decode a codeword with optional erasure retry on lowest-margin bytes
+    const decodeCodeword = (cw, nsym, margins) => {
+      let r = rsDecode(cw, nsym, true);
+      if (r.ok || !margins) return r;
+
+      const indexed = Array.from(margins, (m, idx) => ({ m, idx }))
+        .sort((a, b) => a.m - b.m);
+
+      for (const numE of [4, 6, 8, 10, 12, 14, 16, 18, 20, 21, 22, 23, 24, 25, 26]) {
+        if (numE >= nsym) break;
+        const erasures = indexed.slice(0, numE).map(x => x.idx);
+        r = rsDecode(cw, nsym, false, erasures);
+        if (r.ok) {
+          cw.set(r.codeword);
+          return r;
+        }
+      }
+      return r;
+    };
+
+    const r0 = decodeCodeword(cw0, 28, m0);
     if (!r0.ok) continue;
 
-    const r1 = rsDecode(cw1, 27, true);
+    const r1 = decodeCodeword(cw1, 27, m1);
     if (!r1.ok) continue;
 
-    const r2 = rsDecode(cw2, 27, true);
+    const r2 = decodeCodeword(cw2, 27, m2);
     if (!r2.ok) continue;
 
     // RS succeeded on all 3 codewords! Reconstruct the 460 data bytes

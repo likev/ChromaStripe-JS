@@ -63,3 +63,31 @@ export function symbolsToBytes(symbols, targetByteCount, outBytes) {
   }
   return out;
 }
+
+/**
+ * Maps cell/symbol margins to byte-level confidence scores.
+ *
+ * @param {Float32Array|number[]} cellMargins - Margin per 3-bit symbol
+ * @param {number} targetByteCount - Number of bytes to extract
+ * @param {Float32Array} [outMargins] - Optional preallocated buffer
+ * @returns {Float32Array}
+ */
+export function symbolsMarginsToByteMargins(cellMargins, targetByteCount, outMargins) {
+  const out = outMargins || new Float32Array(targetByteCount);
+  out.fill(Infinity);
+  const totalBits = targetByteCount * 8;
+
+  let bitPos = 0;
+  const numSymbols = cellMargins.length;
+  for (let s = 0; s < numSymbols && bitPos < totalBits; s++) {
+    const m = cellMargins[s];
+    for (let b = 2; b >= 0 && bitPos < totalBits; b--) {
+      const byteIdx = bitPos >>> 3;
+      if (m < out[byteIdx]) {
+        out[byteIdx] = m;
+      }
+      bitPos++;
+    }
+  }
+  return out;
+}

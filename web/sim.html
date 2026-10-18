@@ -166,14 +166,6 @@
           return;
         }
 
-        // Dynamically generate TX frame
-        if (!txFramesMap.has(frameNo)) {
-          txFramesMap.set(frameNo, txSession.getNextFrame());
-        }
-        if (frameNo > 15) {
-          txFramesMap.delete(frameNo - 15);
-        }
-
         // Configure camera from sliders
         camera = new SyntheticCamera({
           camera: { width: 800, height: 600, fps: 30, readoutMs: parseFloat(slReadout.value), exposureMs: 16 },
@@ -184,6 +176,19 @@
         });
 
         const tC = frameNo * (1000 / 30);
+        const blendTop = camera.timing.getTxFrameBlend(tC, 0, camera.camH);
+        const blendBot = camera.timing.getTxFrameBlend(tC, camera.camH - 1, camera.camH);
+        const maxTxNeeded = Math.max(...blendTop.map(b => b.frameIdx), ...blendBot.map(b => b.frameIdx));
+
+        while (txSession.frameNo <= maxTxNeeded) {
+          const nextTx = txSession.getNextFrame();
+          txFramesMap.set(nextTx.frameNo, nextTx);
+        }
+        const minTxNeeded = Math.min(...blendTop.map(b => b.frameIdx), ...blendBot.map(b => b.frameIdx));
+        if (minTxNeeded > 10) {
+          txFramesMap.delete(minTxNeeded - 10);
+        }
+
         const camFrame = camera.captureFrame(tC, txFramesMap);
 
         imgData.data.set(camFrame.rgba);

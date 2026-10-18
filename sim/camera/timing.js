@@ -12,11 +12,11 @@ export class ShutterTiming {
    * @param {number} [options.txHold=4]
    */
   constructor(options = {}) {
-    this.fps = options.fps || 30;
-    this.readoutMs = options.readoutMs || 20;
-    this.exposureMs = options.exposureMs || 16;
-    this.refreshHz = options.refreshHz || 60;
-    this.txHold = options.txHold || 4;
+    this.fps = options.fps ?? 30;
+    this.readoutMs = options.readoutMs !== undefined ? options.readoutMs : 20;
+    this.exposureMs = options.exposureMs !== undefined ? options.exposureMs : 16;
+    this.refreshHz = options.refreshHz ?? 60;
+    this.txHold = options.txHold ?? 4;
 
     this.tHoldMs = (this.txHold / this.refreshHz) * 1000; // ms per TX frame
   }
