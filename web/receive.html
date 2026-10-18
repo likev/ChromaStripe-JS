@@ -4,9 +4,21 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Receive a File — ChromaStripe-JS</title>
+  <meta name="description" content="Receive files by scanning screen optical frames with webcam or mobile camera.">
+  <meta name="theme-color" content="#0b0f19">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ChromaStripe">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="alternate icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/pwa.js"></script>
 </head>
-<body>
+<body class="fixed-layout">
   <header>
     <h1>⚡ ChromaStripe-JS / Receiver</h1>
     <nav class="nav-links">
@@ -17,50 +29,62 @@
     </nav>
   </header>
 
-  <main>
-    <div style="text-align:center; margin-bottom:1.5rem;">
-      <button id="startCameraBtn" class="btn">📷 Open Camera & Start Scanning</button>
-      <input type="file" id="videoFileInput" accept="video/*" style="display:none;">
-      <button id="loadFileBtn" class="btn btn-secondary" style="display:none; margin-left:1rem;">📁 Choose Video File</button>
-      <p style="color:var(--text-muted); font-size:0.85rem; margin-top:0.5rem;">Tip: Hold phone in landscape or use Rotate (90°) on sender for optimal rolling-shutter performance.</p>
-    </div>
-
-    <div id="cameraArea" style="display:none;">
+  <main class="workspace">
+    <section id="cameraArea" class="stage stage-dark">
+      <div id="stagePlaceholder" class="stage-placeholder">📷 Camera preview will appear here</div>
       <div class="video-container">
         <video id="cameraVideo" playsinline autoplay muted></video>
         <canvas id="overlayCanvas" class="overlay-canvas"></canvas>
       </div>
+    </section>
 
-      <div class="stripe-indicators">
-        <div id="stripe0" class="stripe-bar" title="Stripe 0"></div>
-        <div id="stripe1" class="stripe-bar" title="Stripe 1"></div>
-        <div id="stripe2" class="stripe-bar" title="Stripe 2"></div>
-        <div id="stripe3" class="stripe-bar" title="Stripe 3"></div>
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">Source</div>
+        <div class="btn-row">
+          <button id="startCameraBtn" class="btn">📷 Open Camera &amp; Scan</button>
+          <button id="loadFileBtn" class="btn btn-secondary" style="display:none;">📁 Choose Video File</button>
+        </div>
+        <input type="file" id="videoFileInput" accept="video/*" style="display:none;">
+        <p style="color:var(--text-muted); font-size:0.8rem; margin-top:0.6rem;">Tip: Hold phone in landscape or use Rotate (90°) on sender for optimal rolling-shutter performance.</p>
       </div>
-    </div>
 
-    <div id="progressPanel" class="file-info" style="display:none;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem;">
-        <span>Progress: <strong id="rxBlocks">0 / 0</strong></span>
-        <strong id="rxPercent">0%</strong>
+      <div class="panel">
+        <div class="panel-title">Stripe Status</div>
+        <div class="stripe-indicators">
+          <div id="stripe0" class="stripe-bar" title="Stripe 0"></div>
+          <div id="stripe1" class="stripe-bar" title="Stripe 1"></div>
+          <div id="stripe2" class="stripe-bar" title="Stripe 2"></div>
+          <div id="stripe3" class="stripe-bar" title="Stripe 3"></div>
+        </div>
       </div>
-      <div style="width:100%; height:8px; background:#1e293b; border-radius:4px; overflow:hidden; margin-bottom:0.75rem;">
-        <div id="progressBar" style="width:0%; height:100%; background:var(--primary); transition: width 0.2s;"></div>
-      </div>
-      <div style="display:flex; justify-content:space-between; color:var(--text-muted); font-size:0.85rem;">
-        <span>Throughput: <strong id="rxSpeed" style="color:var(--text-main);">0.0 KB/s</strong></span>
-        <span>Worker Decode: <strong id="rxDecodeMs" style="color:var(--text-main);">0.0 ms</strong></span>
-      </div>
-    </div>
 
-    <div id="resultCard" class="card" style="display:none; margin-top:2rem; border-color:var(--success);">
-      <div style="font-size:3rem; margin-bottom:0.5rem;">🎉</div>
-      <h3 id="resName">file.bin</h3>
-      <p id="resSize" style="margin-bottom:0.5rem;">0 KB</p>
-      <div id="resHash" style="color:var(--success); font-weight:bold; margin-bottom:1.5rem;">✔ Verified SHA-256</div>
-      <a id="downloadBtn" class="btn" style="background:var(--success);" download>Download File</a>
-      <button class="btn btn-secondary" style="margin-left:1rem;" onclick="location.reload();">Scan Another</button>
-    </div>
+      <div id="progressPanel" class="panel" style="display:none;">
+        <div class="panel-title">Progress</div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.9rem;">
+          <span><strong id="rxBlocks">0 / 0</strong></span>
+          <strong id="rxPercent">0%</strong>
+        </div>
+        <div style="width:100%; height:8px; background:#1e293b; border-radius:4px; overflow:hidden; margin-bottom:0.75rem;">
+          <div id="progressBar" style="width:0%; height:100%; background:var(--primary); transition: width 0.2s;"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; color:var(--text-muted); font-size:0.8rem; gap:0.5rem; flex-wrap:wrap;">
+          <span>Throughput: <strong id="rxSpeed" style="color:var(--text-main);">0.0 KB/s</strong></span>
+          <span>Decode: <strong id="rxDecodeMs" style="color:var(--text-main);">0.0 ms</strong></span>
+        </div>
+      </div>
+
+      <div id="resultCard" class="card" style="display:none; border-color:var(--success);">
+        <div style="font-size:2rem; margin-bottom:0.25rem;">🎉</div>
+        <h3 id="resName" style="font-size:1.1rem; word-break:break-all;">file.bin</h3>
+        <p id="resSize" style="margin-bottom:0.5rem;">0 KB</p>
+        <div id="resHash" style="color:var(--success); font-weight:bold; margin-bottom:1rem;">✔ Verified SHA-256</div>
+        <div class="btn-row">
+          <a id="downloadBtn" class="btn" style="background:var(--success);" download>Download File</a>
+          <button class="btn btn-secondary" onclick="location.reload();">Scan Another</button>
+        </div>
+      </div>
+    </aside>
   </main>
 
   <script type="module" src="js/receive-app.js"></script>

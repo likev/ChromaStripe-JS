@@ -4,9 +4,21 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Send a File — ChromaStripe-JS</title>
+  <meta name="description" content="Send files via screen-to-camera optical link using ChromaStripe-JS.">
+  <meta name="theme-color" content="#0b0f19">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ChromaStripe">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="alternate icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/pwa.js"></script>
 </head>
-<body>
+<body class="fixed-layout">
   <header>
     <h1>⚡ ChromaStripe-JS / Sender</h1>
     <nav class="nav-links">
@@ -17,38 +29,53 @@
     </nav>
   </header>
 
-  <main>
-    <div id="dropZone" class="drop-zone">
-      <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">📂</div>
-      <h3>Drag & drop any file here, or click to browse</h3>
-      <p style="color:var(--text-muted); margin-top:0.25rem;">Images, PDFs, archives, text, or binary files</p>
-      <input type="file" id="fileInput" style="display:none;">
-    </div>
+  <main class="workspace">
+    <section id="canvasArea" class="stage">
+      <canvas id="txCanvas" width="800" height="800"></canvas>
+    </section>
 
-    <div id="fileStats" class="file-info" style="display:none;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem; align-items:center;">
-        <span style="font-weight:bold;" id="fileName">-</span>
-        <div style="display:flex; gap:0.5rem; align-items:center;">
-          <span id="fileSize">-</span>
-          <button id="changeFileBtn" class="btn btn-secondary" style="font-size:0.8rem; padding:0.25rem 0.5rem;">Change</button>
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-title">File</div>
+        <div id="dropZone" class="drop-zone">
+          <div style="font-size: 1.75rem; margin-bottom: 0.25rem;">📂</div>
+          <h3 style="font-size: 0.95rem;">Drop a file or click to browse</h3>
+          <p style="color:var(--text-muted); margin-top:0.25rem; font-size:0.8rem;">Images, PDFs, archives, text, or binary</p>
+          <input type="file" id="fileInput" style="display:none;">
+        </div>
+
+        <div id="fileStats" class="file-info" style="display:none;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem; align-items:center; gap:0.5rem;">
+            <span style="font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" id="fileName">-</span>
+            <div style="display:flex; gap:0.5rem; align-items:center; flex-shrink:0;">
+              <span id="fileSize" style="font-size:0.85rem;">-</span>
+              <button id="changeFileBtn" class="btn btn-secondary" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Change</button>
+            </div>
+          </div>
+          <div style="color:var(--text-muted); font-size:0.85rem;">
+            Blocks (K): <strong id="blockCount" style="color:var(--text-main);">-</strong> |
+            Est: <strong id="estTime" style="color:var(--text-main);">-</strong>
+          </div>
         </div>
       </div>
-      <div style="color:var(--text-muted); font-size:0.9rem;">
-        Source Blocks (K): <strong id="blockCount" style="color:var(--text-main);">-</strong> |
-        Est. Time: <strong id="estTime" style="color:var(--text-main);">-</strong>
+
+      <div class="panel">
+        <div class="panel-title">Transmission</div>
+        <div class="btn-row">
+          <button id="startBtn" class="btn" disabled>Start Transmission</button>
+          <button id="pauseBtn" class="btn btn-secondary" style="display:none;">Pause</button>
+        </div>
+        <div class="btn-row">
+          <button id="rotateBtn" class="btn btn-secondary">Rotate (0°)</button>
+          <button id="fullscreenBtn" class="btn btn-secondary">Fullscreen</button>
+        </div>
       </div>
-    </div>
 
-    <div style="display:flex; gap:1rem; align-items:center; margin: 1rem 0; flex-wrap:wrap;">
-      <button id="startBtn" class="btn" disabled>Start Transmission</button>
-      <button id="pauseBtn" class="btn btn-secondary" style="display:none;">Pause</button>
-      <button id="rotateBtn" class="btn btn-secondary">Rotate (0°)</button>
-      <button id="fullscreenBtn" class="btn btn-secondary">Fullscreen</button>
-
-      <div style="margin-left:auto; display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
-        <div style="display:flex; align-items:center; gap:0.5rem;">
-          <label for="sizeSelect" style="color:var(--text-muted); font-size:0.9rem;">Size:</label>
-          <select id="sizeSelect" style="background:var(--card-bg); color:var(--text-main); border:1px solid var(--border-color); padding:0.4rem; border-radius:6px;">
+      <div class="panel">
+        <div class="panel-title">Settings</div>
+        <div class="field">
+          <label for="sizeSelect">Size</label>
+          <select id="sizeSelect">
             <option value="auto" selected>Auto [Fit Screen]</option>
             <option value="3">3px core [400x400]</option>
             <option value="4">4px core [480x480]</option>
@@ -58,12 +85,13 @@
             <option value="8">8px core [800x800]</option>
             <option value="9">9px core [880x880]</option>
             <option value="10">10px core [960x960]</option>
+            <option value="12">12px core [1120x1120]</option>
+            <option value="14">14px core [1280x1280]</option>
           </select>
         </div>
-
-        <div style="display:flex; align-items:center; gap:0.5rem;">
-          <label for="speedSelect" style="color:var(--text-muted); font-size:0.9rem;">Speed:</label>
-          <select id="speedSelect" style="background:var(--card-bg); color:var(--text-main); border:1px solid var(--border-color); padding:0.4rem; border-radius:6px;">
+        <div class="field">
+          <label for="speedSelect">Speed</label>
+          <select id="speedSelect">
             <option value="6">Safe (10 fps)</option>
             <option value="4" selected>Normal (15 fps)</option>
             <option value="3">Fast (20 fps)</option>
@@ -71,30 +99,26 @@
           </select>
         </div>
       </div>
-    </div>
 
-    <div id="canvasArea" class="canvas-container">
-      <canvas id="txCanvas" width="800" height="800"></canvas>
-    </div>
-
-    <div id="hud" class="hud-panel" style="display:none;">
-      <div class="hud-item">
-        <span class="hud-label">Phase</span>
-        <span id="hudPhase" class="hud-value">-</span>
+      <div id="hud" class="hud-panel" style="display:none;">
+        <div class="hud-item">
+          <span class="hud-label">Phase</span>
+          <span id="hudPhase" class="hud-value">-</span>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">Droplets Sent</span>
+          <span id="hudSeeds" class="hud-value">0</span>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">FPS</span>
+          <span id="hudFps" class="hud-value">0.0</span>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">Elapsed</span>
+          <span id="hudTime" class="hud-value">0:00</span>
+        </div>
       </div>
-      <div class="hud-item">
-        <span class="hud-label">Droplets Sent</span>
-        <span id="hudSeeds" class="hud-value">0</span>
-      </div>
-      <div class="hud-item">
-        <span class="hud-label">FPS</span>
-        <span id="hudFps" class="hud-value">0.0</span>
-      </div>
-      <div class="hud-item">
-        <span class="hud-label">Elapsed</span>
-        <span id="hudTime" class="hud-value">0:00</span>
-      </div>
-    </div>
+    </aside>
   </main>
 
   <script type="module" src="js/send-app.js"></script>

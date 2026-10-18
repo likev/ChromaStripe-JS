@@ -9,7 +9,7 @@
  * @param {object} [options]
  * @param {number} [options.guardPx=1] - Guard pixel width per cell side (default 1)
  * @param {number} [options.minCorePx=3] - Minimum corePx (default 3, 400x400)
- * @param {number} [options.maxCorePx=10] - Maximum corePx (default 10, 960x960)
+ * @param {number} [options.maxCorePx=10] - Maximum corePx (default 14, 1280x1280)
  * @param {number} [options.viewportWidth] - Explicit width for testing
  * @param {number} [options.viewportHeight] - Explicit height for testing
  * @param {boolean} [options.isFullscreen] - Explicit fullscreen state for testing
@@ -19,7 +19,7 @@
 export function computeAutoCorePx(options = {}) {
   const guardPx = options.guardPx !== undefined ? options.guardPx : 1;
   const minCore = options.minCorePx !== undefined ? options.minCorePx : 3;
-  const maxCore = options.maxCorePx !== undefined ? options.maxCorePx : 10;
+  const maxCore = options.maxCorePx !== undefined ? options.maxCorePx : 14;
 
   const hasDom = typeof window !== 'undefined' && typeof document !== 'undefined';
   const isFs = options.isFullscreen !== undefined
@@ -55,7 +55,18 @@ export function computeAutoCorePx(options = {}) {
     let topOffset = 180;
     let belowOffset = 50;
 
-    if (hasDom) {
+    const stageEl = hasDom ? document.getElementById('canvasArea') : null;
+    if (stageEl && stageEl.clientWidth > 0 && stageEl.clientHeight > 0) {
+      // Workspace layout: the stage is sized by the page grid (independent of the canvas),
+      // so the available area is simply its content box.
+      if (options.containerPadding === undefined) {
+        const cs = window.getComputedStyle(stageEl);
+        padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+        padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      }
+      availW = Math.max(0, stageEl.clientWidth - padX);
+      availH = Math.max(0, stageEl.clientHeight - padY);
+    } else if (hasDom) {
       const container = document.getElementById('canvasArea');
       if (container) {
         const cs = window.getComputedStyle(container);

@@ -16,9 +16,11 @@ const MIME_TYPES = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
   '.bin': 'application/octet-stream',
   '.rgba': 'application/octet-stream'
@@ -40,6 +42,16 @@ function requestHandler(req, res) {
   // If path is a directory, look for index.html
   if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
     filePath = path.join(filePath, 'index.html');
+  }
+
+  // Check fallback in web/public if requested under /web/
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    if (reqUrl.startsWith('/web/')) {
+      const publicPath = path.resolve('./web/public' + reqUrl.slice(4));
+      if (fs.existsSync(publicPath) && fs.statSync(publicPath).isFile()) {
+        filePath = publicPath;
+      }
+    }
   }
 
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {

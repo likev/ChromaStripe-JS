@@ -173,7 +173,8 @@ function startReceiving() {
 
   startBtn.style.display = 'none';
   if (loadFileBtn) loadFileBtn.style.display = 'none';
-  cameraArea.style.display = 'block';
+  const placeholder = document.getElementById('stagePlaceholder');
+  if (placeholder) placeholder.style.display = 'none';
   progressPanel.style.display = 'block';
 
   isCapturing = true;

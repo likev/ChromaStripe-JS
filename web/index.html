@@ -4,7 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ChromaStripe-JS — Optical File Modem</title>
+  <meta name="description" content="High-speed optical modem in 100% vanilla JavaScript. Air-gapped screen-to-camera file transfer.">
+  <meta name="theme-color" content="#0b0f19">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ChromaStripe">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="alternate icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/pwa.js"></script>
 </head>
 <body>
   <header>
@@ -62,6 +74,7 @@
       <div>${caps.camera ? '✔' : '✖'} Camera Access (getUserMedia): ${caps.camera ? 'Supported' : 'Missing'}</div>
       <div>${caps.offscreenCanvas ? '✔' : '✖'} OffscreenCanvas: ${caps.offscreenCanvas ? 'Supported' : 'Missing'}</div>
       <div>${caps.videoFrame ? '✔' : '✖'} VideoFrame API: ${caps.videoFrame ? 'Supported' : 'Missing (falls back to Canvas)'}</div>
+      <div>${caps.serviceWorker ? '✔' : '✖'} Service Worker / PWA: ${caps.serviceWorker ? 'Supported (100% Offline Ready)' : 'Missing'}</div>
     `;
   </script>
 </body>

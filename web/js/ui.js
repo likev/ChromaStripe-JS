@@ -23,7 +23,8 @@ export function checkBrowserCapabilities() {
     decompressionStream: typeof DecompressionStream !== 'undefined',
     camera: typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia,
     offscreenCanvas: typeof OffscreenCanvas !== 'undefined',
-    videoFrame: typeof VideoFrame !== 'undefined'
+    videoFrame: typeof VideoFrame !== 'undefined',
+    serviceWorker: typeof navigator !== 'undefined' && 'serviceWorker' in navigator
   };
 
   caps.allSupported = caps.webCrypto && caps.compressionStream && caps.decompressionStream;
