@@ -49,7 +49,7 @@ function chromaStripePwaPlugin() {
       for (const file of files) {
         if (file.endsWith('.html')) {
           const cleanRoute = file.slice(0, -5);
-          if (cleanRoute !== 'index') {
+          if (cleanRoute !== 'index' && cleanRoute !== '404') {
             precacheSet.add(cleanRoute);
           }
         }
@@ -110,7 +110,7 @@ self.addEventListener('install', (event) => {
                 const cleanRoute = url.slice(0, -5);
                 if (cleanRoute === 'index') {
                   await cache.put('./', clean.clone());
-                } else {
+                } else if (cleanRoute !== '404') {
                   await cache.put(cleanRoute, clean.clone());
                 }
               } else if (!url.includes('.') && url !== './') {
@@ -254,7 +254,8 @@ export default defineConfig({
         main: resolve(__dirname, 'web/index.html'),
         send: resolve(__dirname, 'web/send.html'),
         receive: resolve(__dirname, 'web/receive.html'),
-        sim: resolve(__dirname, 'web/sim.html')
+        sim: resolve(__dirname, 'web/sim.html'),
+        notFound: resolve(__dirname, 'web/404.html')
       }
     }
   },

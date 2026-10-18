@@ -102,6 +102,21 @@ function requestHandler(req, res) {
   const filePath = resolveCandidatePath(reqUrl);
 
   if (!filePath) {
+    const notFoundCandidate = hasDist
+      ? path.resolve('./dist/404.html')
+      : path.resolve('./web/404.html');
+
+    if (fs.existsSync(notFoundCandidate)) {
+      res.writeHead(404, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp'
+      });
+      fs.createReadStream(notFoundCandidate).pipe(res);
+      return;
+    }
+
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end(`File not found: ${reqUrl}`);
     return;

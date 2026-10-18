@@ -113,7 +113,7 @@ describe('PWA: Icon Assets', () => {
 });
 
 describe('PWA: HTML Document Integration', () => {
-  const htmlFiles = ['index.html', 'send.html', 'receive.html', 'sim.html'];
+  const htmlFiles = ['index.html', 'send.html', 'receive.html', 'sim.html', '404.html'];
 
   for (const htmlFile of htmlFiles) {
     test(`${htmlFile} contains required PWA metadata, manifest link, and icons`, () => {
@@ -172,6 +172,7 @@ describe('PWA: Service Worker and Build Integration', () => {
     assert.ok(precached.includes('send.html'), 'Precache must include send.html');
     assert.ok(precached.includes('receive.html'), 'Precache must include receive.html');
     assert.ok(precached.includes('sim.html'), 'Precache must include sim.html');
+    assert.ok(precached.includes('404.html'), 'Precache must include 404.html');
     assert.ok(precached.includes('send'), 'Precache must include clean route send');
     assert.ok(precached.includes('receive'), 'Precache must include clean route receive');
     assert.ok(precached.includes('sim'), 'Precache must include clean route sim');

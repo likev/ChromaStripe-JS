@@ -12,6 +12,7 @@ const PRECACHE_ASSETS = [
   'send.html',
   'receive.html',
   'sim.html',
+  '404.html',
   'send',
   'receive',
   'sim',
@@ -66,7 +67,7 @@ self.addEventListener('install', (event) => {
                 const cleanRoute = url.slice(0, -5);
                 if (cleanRoute === 'index') {
                   await cache.put('./', clean.clone());
-                } else {
+                } else if (cleanRoute !== '404') {
                   await cache.put(cleanRoute, clean.clone());
                 }
               } else if (!url.includes('.') && url !== './') {
