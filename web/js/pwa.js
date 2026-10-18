@@ -13,20 +13,28 @@ export function getServiceWorkerScopeAndUrl() {
   if (typeof window === 'undefined') {
     return { swUrl: './sw.js', scope: './' };
   }
+
   const loc = window.location;
   const pathParts = loc.pathname.split('/');
   const lastPart = pathParts[pathParts.length - 1];
-  // If the path has no trailing slash and does not contain a file extension (.html),
-  // it is a directory path missing a trailing slash.
-  const isBareDirectory = lastPart.length > 0 && !lastPart.includes('.');
+  const knownRoutes = new Set(['send', 'receive', 'sim', 'app']);
 
-  const baseHref = isBareDirectory
-    ? `${loc.origin}${loc.pathname}/`
-    : loc.href;
+  let baseHref;
+  if (knownRoutes.has(lastPart) || lastPart.includes('.')) {
+    // Current page is a route file (e.g. /send, /receive.html)
+    baseHref = new URL('./', loc.href).href;
+  } else if (lastPart.length > 0) {
+    // Bare directory without trailing slash (e.g. /subpath or /modem)
+    baseHref = `${loc.origin}${loc.pathname}/`;
+  } else {
+    // Already has trailing slash (e.g. / or /subpath/)
+    baseHref = loc.href;
+  }
 
-  const swUrl = new URL('sw.js', baseHref).href;
-  const scope = new URL('./', baseHref).href;
-  return { swUrl, scope };
+  return {
+    swUrl: new URL('sw.js', baseHref).href,
+    scope: new URL('./', baseHref).href
+  };
 }
 
 /**

@@ -43,6 +43,9 @@ function resolveCandidatePath(reqUrl) {
           return distCandidate;
         }
       }
+      if (fs.existsSync(distCandidate + '.html') && fs.statSync(distCandidate + '.html').isFile()) {
+        return distCandidate + '.html';
+      }
     }
   }
 
@@ -59,12 +62,17 @@ function resolveCandidatePath(reqUrl) {
 
   // 2. Fallback under web/
   const webPath = path.resolve('./web' + reqUrl);
-  if (webPath.startsWith(process.cwd()) && fs.existsSync(webPath)) {
-    if (fs.statSync(webPath).isDirectory()) {
-      const idx = path.join(webPath, 'index.html');
-      if (fs.existsSync(idx)) return idx;
-    } else {
-      return webPath;
+  if (webPath.startsWith(process.cwd())) {
+    if (fs.existsSync(webPath)) {
+      if (fs.statSync(webPath).isDirectory()) {
+        const idx = path.join(webPath, 'index.html');
+        if (fs.existsSync(idx)) return idx;
+      } else {
+        return webPath;
+      }
+    }
+    if (fs.existsSync(webPath + '.html') && fs.statSync(webPath + '.html').isFile()) {
+      return webPath + '.html';
     }
   }
 

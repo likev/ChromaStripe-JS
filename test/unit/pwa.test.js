@@ -146,19 +146,21 @@ describe('PWA: Service Worker and Build Integration', () => {
     assert.ok(content.includes('addEventListener(\'activate\''), 'Must implement activate listener');
     assert.ok(content.includes('addEventListener(\'fetch\''), 'Must implement fetch listener');
     assert.ok(content.includes('ignoreSearch: true'), 'Must use ignoreSearch for offline parameter matching');
-    assert.ok(content.includes('htmlCandidate'), 'Must support clean URL navigation routing');
+    assert.ok(content.includes('matchCandidate'), 'Must support multi-variant candidate matching for clean URLs');
+    assert.ok(content.includes('cleanResponse'), 'Must strip redirected flag to prevent navigation ERR_FAILED');
   });
 
   test('production build emits dist/sw.js with complete precache list and robust offline routing', () => {
+    // Force rebuild to ensure dist/sw.js is generated with latest config
+    execSync('npm run build', { cwd: ROOT_DIR, stdio: 'pipe' });
+
     const distSwPath = path.join(DIST_DIR, 'sw.js');
-    if (!fs.existsSync(distSwPath)) {
-      execSync('npm run build', { cwd: ROOT_DIR, stdio: 'pipe' });
-    }
     assert.ok(fs.existsSync(distSwPath), 'dist/sw.js must exist after build');
     const content = fs.readFileSync(distSwPath, 'utf-8');
 
     assert.ok(content.includes('ignoreSearch: true'), 'Production SW must use ignoreSearch');
-    assert.ok(content.includes('htmlCandidate'), 'Production SW must support clean URL navigation');
+    assert.ok(content.includes('matchCandidate'), 'Production SW must support clean URL navigation');
+    assert.ok(content.includes('cleanResponse'), 'Production SW must clean redirected responses');
 
     // Extract PRECACHE_ASSETS from dist/sw.js
     const match = content.match(/const PRECACHE_ASSETS = (\[[\s\S]*?\]);/);
@@ -170,6 +172,9 @@ describe('PWA: Service Worker and Build Integration', () => {
     assert.ok(precached.includes('send.html'), 'Precache must include send.html');
     assert.ok(precached.includes('receive.html'), 'Precache must include receive.html');
     assert.ok(precached.includes('sim.html'), 'Precache must include sim.html');
+    assert.ok(precached.includes('send'), 'Precache must include clean route send');
+    assert.ok(precached.includes('receive'), 'Precache must include clean route receive');
+    assert.ok(precached.includes('sim'), 'Precache must include clean route sim');
     assert.ok(precached.includes('manifest.webmanifest'), 'Precache must include manifest');
 
     // Ensure all JS bundles, CSS, and worker are included
@@ -179,11 +184,12 @@ describe('PWA: Service Worker and Build Integration', () => {
     const hasCss = precached.some(p => p.endsWith('.css'));
     assert.ok(hasCss, 'Precache must include compiled CSS bundle');
 
-    // Ensure all precached assets physically exist in dist/
+    // Ensure all precached assets physically exist in dist/ (or match an HTML route)
     for (const asset of precached) {
       if (asset === './') continue;
       const fullPath = path.join(DIST_DIR, asset);
-      assert.ok(fs.existsSync(fullPath), `Precached asset ${asset} must exist in dist/`);
+      const htmlPath = path.join(DIST_DIR, `${asset}.html`);
+      assert.ok(fs.existsSync(fullPath) || fs.existsSync(htmlPath), `Precached asset ${asset} must exist in dist/`);
     }
   });
 
@@ -216,6 +222,29 @@ describe('PWA: Service Worker and Build Integration', () => {
       const filePage = getServiceWorkerScopeAndUrl();
       assert.equal(filePage.swUrl, 'https://example.com/sw.js');
       assert.equal(filePage.scope, 'https://example.com/');
+
+      // Test clean routes on custom domain / Cloudflare Pages root
+      globalThis.window = {
+        location: new URL('https://qr.pplx.io/send')
+      };
+      const cleanSend = getServiceWorkerScopeAndUrl();
+      assert.equal(cleanSend.swUrl, 'https://qr.pplx.io/sw.js');
+      assert.equal(cleanSend.scope, 'https://qr.pplx.io/');
+
+      globalThis.window = {
+        location: new URL('https://qr.pplx.io/receive')
+      };
+      const cleanReceive = getServiceWorkerScopeAndUrl();
+      assert.equal(cleanReceive.swUrl, 'https://qr.pplx.io/sw.js');
+      assert.equal(cleanReceive.scope, 'https://qr.pplx.io/');
+
+      // Test clean route in nested subdirectory
+      globalThis.window = {
+        location: new URL('https://example.com/modem/send')
+      };
+      const nestedCleanSend = getServiceWorkerScopeAndUrl();
+      assert.equal(nestedCleanSend.swUrl, 'https://example.com/modem/sw.js');
+      assert.equal(nestedCleanSend.scope, 'https://example.com/modem/');
     } finally {
       if (origWindow === undefined) {
         delete globalThis.window;

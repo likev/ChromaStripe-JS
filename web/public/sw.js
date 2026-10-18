@@ -12,6 +12,9 @@ const PRECACHE_ASSETS = [
   'send.html',
   'receive.html',
   'sim.html',
+  'send',
+  'receive',
+  'sim',
   'manifest.webmanifest',
   'manifest.json',
   'favicon.ico',
@@ -31,6 +34,22 @@ const PRECACHE_ASSETS = [
   'js/rx-worker.js'
 ];
 
+/**
+ * Strips redirected flag from response to satisfy Service Worker Fetch spec
+ * which prohibits returning redirected responses to 'navigate' mode requests.
+ */
+async function cleanResponse(response) {
+  if (!response || !response.redirected) {
+    return response;
+  }
+  const body = await response.blob();
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: new Headers(response.headers)
+  });
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
@@ -39,7 +58,20 @@ self.addEventListener('install', (event) => {
           try {
             const res = await fetch(url, { cache: 'reload' });
             if (res && res.status === 200) {
-              await cache.put(url, res);
+              const clean = await cleanResponse(res);
+              await cache.put(url, clean.clone());
+
+              // Alias HTML routes to clean routes and vice versa
+              if (url.endsWith('.html')) {
+                const cleanRoute = url.slice(0, -5);
+                if (cleanRoute === 'index') {
+                  await cache.put('./', clean.clone());
+                } else {
+                  await cache.put(cleanRoute, clean.clone());
+                }
+              } else if (!url.includes('.') && url !== './') {
+                await cache.put(url + '.html', clean.clone());
+              }
             }
           } catch (e) {
             // Silently ignore individual missing dev assets
@@ -64,6 +96,39 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+async function matchCandidate(cache, request, url) {
+  // 1. Direct match with ignoreSearch
+  let cached = await cache.match(request, { ignoreSearch: true });
+  if (cached) return cleanResponse(cached);
+
+  // 2. Candidate variations for clean URLs, subpaths, and .html extensions
+  const cleanPath = url.pathname.replace(/\/$/, '');
+  const lastSegment = cleanPath.split('/').pop() || '';
+
+  const candidates = [];
+  if (cleanPath.endsWith('.html')) {
+    candidates.push(cleanPath);
+    candidates.push(lastSegment);
+    candidates.push(lastSegment.replace(/\.html$/, ''));
+  } else if (lastSegment) {
+    candidates.push(cleanPath);
+    candidates.push(lastSegment);
+    candidates.push(lastSegment + '.html');
+    candidates.push(`${cleanPath}.html`);
+  }
+
+  candidates.push('./');
+  candidates.push('index.html');
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    cached = await cache.match(candidate, { ignoreSearch: true });
+    if (cached) return cleanResponse(cached);
+  }
+
+  return null;
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
@@ -73,17 +138,18 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      // 1. Check cache ignoring search params (handles ?source=file, ?debug=1, etc.)
-      const cached = await cache.match(event.request, { ignoreSearch: true });
+      // 1. Check cache ignoring search params & matching clean URL candidates
+      const cached = await matchCandidate(cache, event.request, url);
 
       if (cached) {
         // Stale-While-Revalidate: fetch in background to refresh cache if online
         if (event.request.mode === 'navigate' || !url.pathname.includes('/assets/')) {
           event.waitUntil(
             fetch(event.request)
-              .then((networkRes) => {
+              .then(async (networkRes) => {
                 if (networkRes && networkRes.status === 200) {
-                  cache.put(event.request, networkRes.clone());
+                  const cleanRes = await cleanResponse(networkRes);
+                  await cache.put(event.request, cleanRes);
                 }
               })
               .catch(() => {})
@@ -96,22 +162,16 @@ self.addEventListener('fetch', (event) => {
       try {
         const response = await fetch(event.request);
         if (response && response.status === 200) {
-          cache.put(event.request, response.clone());
+          const cleanRes = await cleanResponse(response);
+          await cache.put(event.request, cleanRes.clone());
+          return cleanRes;
         }
         return response;
       } catch (err) {
         // Network failed (offline / air-gapped)
         // For HTML navigation requests, support clean URLs and fallback to index
         if (event.request.mode === 'navigate') {
-          const cleanPath = url.pathname.replace(/\/$/, '');
-          const htmlCandidate = cleanPath.endsWith('.html') ? cleanPath : cleanPath + '.html';
-          const fileOnly = htmlCandidate.split('/').pop();
-
-          const fallback = await cache.match(event.request, { ignoreSearch: true }) ||
-                           await cache.match(htmlCandidate, { ignoreSearch: true }) ||
-                           await cache.match(fileOnly, { ignoreSearch: true }) ||
-                           await cache.match('index.html', { ignoreSearch: true }) ||
-                           await cache.match('./', { ignoreSearch: true });
+          const fallback = await matchCandidate(cache, event.request, url);
           if (fallback) return fallback;
         }
         throw err;
