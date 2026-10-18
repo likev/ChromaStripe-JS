@@ -1,15 +1,19 @@
 /**
  * Zero-dependency static HTTP/HTTPS file server using Node.js built-ins.
+ * Serves production dist/ build if available, or web/ development workspace.
  */
 
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const useHttps = args.includes('--https');
 const port = parseInt(process.env.PORT || (useHttps ? '8443' : '8080'), 10);
+
+const hasDist = fs.existsSync(path.resolve('dist/index.html'));
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -26,35 +30,70 @@ const MIME_TYPES = {
   '.rgba': 'application/octet-stream'
 };
 
-function requestHandler(req, res) {
-  let reqUrl = req.url.split('?')[0];
-  if (reqUrl === '/') reqUrl = '/web/index.html';
-
-  let filePath = path.resolve('.' + reqUrl);
-
-  // Security check: ensure path is within workspace
-  if (!filePath.startsWith(process.cwd())) {
-    res.writeHead(403);
-    res.end('Forbidden');
-    return;
-  }
-
-  // If path is a directory, look for index.html
-  if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(filePath, 'index.html');
-  }
-
-  // Check fallback in web/public if requested under /web/
-  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-    if (reqUrl.startsWith('/web/')) {
-      const publicPath = path.resolve('./web/public' + reqUrl.slice(4));
-      if (fs.existsSync(publicPath) && fs.statSync(publicPath).isFile()) {
-        filePath = publicPath;
+function resolveCandidatePath(reqUrl) {
+  // If dist/ build exists and request is not explicitly targeted to /web/, /src/, or /sim/:
+  if (hasDist && !reqUrl.startsWith('/web/') && !reqUrl.startsWith('/src/') && !reqUrl.startsWith('/sim/')) {
+    const distCandidate = path.resolve('./dist' + reqUrl);
+    if (distCandidate.startsWith(process.cwd())) {
+      if (fs.existsSync(distCandidate)) {
+        if (fs.statSync(distCandidate).isDirectory()) {
+          const idx = path.join(distCandidate, 'index.html');
+          if (fs.existsSync(idx)) return idx;
+        } else {
+          return distCandidate;
+        }
       }
     }
   }
 
-  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+  // 1. Direct workspace path
+  const directPath = path.resolve('.' + reqUrl);
+  if (directPath.startsWith(process.cwd()) && fs.existsSync(directPath)) {
+    if (fs.statSync(directPath).isDirectory()) {
+      const idx = path.join(directPath, 'index.html');
+      if (fs.existsSync(idx)) return idx;
+    } else {
+      return directPath;
+    }
+  }
+
+  // 2. Fallback under web/
+  const webPath = path.resolve('./web' + reqUrl);
+  if (webPath.startsWith(process.cwd()) && fs.existsSync(webPath)) {
+    if (fs.statSync(webPath).isDirectory()) {
+      const idx = path.join(webPath, 'index.html');
+      if (fs.existsSync(idx)) return idx;
+    } else {
+      return webPath;
+    }
+  }
+
+  // 3. Fallback under web/public/
+  const publicPath = path.resolve('./web/public' + reqUrl);
+  if (publicPath.startsWith(process.cwd()) && fs.existsSync(publicPath) && fs.statSync(publicPath).isFile()) {
+    return publicPath;
+  }
+
+  // 4. Fallback if requested with /web/ prefix pointing to web/public
+  if (reqUrl.startsWith('/web/')) {
+    const webPublicPath = path.resolve('./web/public' + reqUrl.slice(4));
+    if (webPublicPath.startsWith(process.cwd()) && fs.existsSync(webPublicPath) && fs.statSync(webPublicPath).isFile()) {
+      return webPublicPath;
+    }
+  }
+
+  return null;
+}
+
+function requestHandler(req, res) {
+  let reqUrl = req.url.split('?')[0];
+  if (reqUrl === '/') {
+    reqUrl = hasDist ? '/index.html' : '/web/index.html';
+  }
+
+  const filePath = resolveCandidatePath(reqUrl);
+
+  if (!filePath) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end(`File not found: ${reqUrl}`);
     return;
@@ -81,9 +120,13 @@ if (useHttps) {
   const keyPath = path.resolve('tools/key.pem');
 
   if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
-    console.error(`[Error] SSL certificate files missing: ${certPath} / ${keyPath}`);
-    console.error(`Run ./tools/make-cert.sh first to generate self-signed certs.`);
-    process.exit(1);
+    console.log(`[ChromaStripe Server] SSL certificates missing. Generating self-signed certs...`);
+    try {
+      execSync('bash tools/make-cert.sh', { stdio: 'inherit' });
+    } catch (err) {
+      console.error(`[Error] Failed to generate SSL certificates:`, err);
+      process.exit(1);
+    }
   }
 
   const options = {
@@ -98,5 +141,9 @@ if (useHttps) {
 server.listen(port, () => {
   const proto = useHttps ? 'https' : 'http';
   console.log(`[ChromaStripe Server] Running at ${proto}://localhost:${port}/`);
-  console.log(`[ChromaStripe Server] Web UI: ${proto}://localhost:${port}/web/`);
+  if (hasDist) {
+    console.log(`[ChromaStripe Server] Serving production PWA bundle (dist/): ${proto}://localhost:${port}/`);
+  } else {
+    console.log(`[ChromaStripe Server] Serving development workspace (web/): ${proto}://localhost:${port}/`);
+  }
 });
