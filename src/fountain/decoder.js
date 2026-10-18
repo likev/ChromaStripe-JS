@@ -85,10 +85,10 @@ export class FountainDecoder {
       this.waitingList.push({ indices: activeIndices, payload });
     }
 
-    // If not complete and we have waiting equations, attempt Inactivation GE
+    // If not complete and we have enough waiting equations, attempt Inactivation GE
     if (!this.isComplete() && this.waitingList.length > 0) {
       const numUnknowns = this.K - this.solvedCount;
-      if (this.waitingList.length >= numUnknowns || (numUnknowns <= 64 && this.waitingList.length >= 2)) {
+      if (this.waitingList.length >= numUnknowns) {
         this._tryInactivationGE(numUnknowns);
       }
     }

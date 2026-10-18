@@ -10,7 +10,7 @@ import {
   PROTOCOL_VERSION
 } from './constants.js';
 import { crc32 } from '../core/crc.js';
-import { rsEncode, rsDecode } from '../core/reedsolomon.js';
+import { rsEncode, rsDecode, fastDecodeCodeword } from '../core/reedsolomon.js';
 import { scramblePacket } from './scrambler.js';
 
 /**
@@ -154,33 +154,21 @@ export function parsePacket(rawBytes, expectedStripeIdx = -1, byteMargins = null
       for (let i = 0; i < 27; i++) m2[153 + i] = byteMargins[515 + i];
     }
 
-    // Helper to decode a codeword with optional erasure retry on lowest-margin bytes
-    const decodeCodeword = (cw, nsym, margins) => {
-      let r = rsDecode(cw, nsym, true);
-      if (r.ok || !margins) return r;
-
-      const indexed = Array.from(margins, (m, idx) => ({ m, idx }))
-        .sort((a, b) => a.m - b.m);
-
-      for (const numE of [4, 6, 8, 10, 12, 14, 16, 18, 20, 21, 22, 23, 24, 25, 26]) {
-        if (numE >= nsym) break;
-        const erasures = indexed.slice(0, numE).map(x => x.idx);
-        r = rsDecode(cw, nsym, false, erasures);
-        if (r.ok) {
-          cw.set(r.codeword);
-          return r;
-        }
-      }
-      return r;
-    };
-
-    const r0 = decodeCodeword(cw0, 28, m0);
+    const r0 = fastDecodeCodeword(cw0, 28, m0);
     if (!r0.ok) continue;
 
-    const r1 = decodeCodeword(cw1, 27, m1);
+    // Early check cw0[0] header before decoding cw1 and cw2
+    const hdr0 = cw0[0];
+    if (((hdr0 >>> 6) & 0x03) !== PROTOCOL_VERSION ||
+        ((hdr0 >>> 4) & 0x03) !== candStripe ||
+        (hdr0 & 0x03) !== 0) {
+      continue; // Reject bogus cw0 before decoding cw1 and cw2!
+    }
+
+    const r1 = fastDecodeCodeword(cw1, 27, m1);
     if (!r1.ok) continue;
 
-    const r2 = decodeCodeword(cw2, 27, m2);
+    const r2 = fastDecodeCodeword(cw2, 27, m2);
     if (!r2.ok) continue;
 
     // RS succeeded on all 3 codewords! Reconstruct the 460 data bytes

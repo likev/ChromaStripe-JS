@@ -125,8 +125,8 @@ export class PilotCalibrator {
     const y0 = coords[j];
     const y1 = coords[j + 1];
 
-    const s = Math.max(0.0, Math.min(1.0, (u - x0) / (x1 - x0)));
-    const t = Math.max(0.0, Math.min(1.0, (v - y0) / (y1 - y0)));
+    const s = Math.max(-0.4, Math.min(1.4, (u - x0) / (x1 - x0)));
+    const t = Math.max(-0.4, Math.min(1.4, (v - y0) / (y1 - y0)));
 
     const idx00 = (j * 4 + i) * 3;
     const idx10 = (j * 4 + (i + 1)) * 3;
@@ -141,7 +141,7 @@ export class PilotCalibrator {
 
       const top = (1.0 - s) * v00 + s * v10;
       const bot = (1.0 - s) * v01 + s * v11;
-      return (1.0 - t) * top + t * bot;
+      return Math.max(10, Math.min(245, (1.0 - t) * top + t * bot));
     };
 
     return {

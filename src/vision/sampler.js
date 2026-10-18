@@ -1,9 +1,111 @@
 /**
- * Zero-warp coordinate sampler: Samples 2x2 px core block per cell via inverse homography,
- * applies timing refinement, and branchlessly slices into 3-bit symbols using local pilot thresholds.
+ * Zero-warp coordinate sampler with 5-point spatial lattice deblur
+ * and causal 3-channel decision-feedback slicing.
  */
 
 import { projectH } from './homography.js';
+
+/**
+ * Shared causal 3-channel decision-feedback slicer.
+ * Conditions each channel's threshold on decisions of the other channels.
+ *
+ * @param {number} rVal - Deblurred Red channel intensity
+ * @param {number} gVal - Deblurred Green channel intensity
+ * @param {number} bVal - Deblurred Blue channel intensity
+ * @param {number} Tr - Local Red threshold
+ * @param {number} Tg - Local Green threshold
+ * @param {number} Tb - Local Blue threshold
+ * @returns {{ sym: number, margin: number }}
+ */
+export function sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb) {
+  // Stage 1: Initial estimates
+  const bG0 = gVal >= Tg ? 1 : 0;
+  const bR0 = rVal >= (Tr + (bG0 ? 14 : -10)) ? 1 : 0;
+  const bB0 = bVal >= (Tb + (bR0 ? 12 : -8) + (bG0 ? 12 : -8)) ? 1 : 0;
+
+  // Stage 2: 2-neighbor crosstalk-compensated decisions
+  const tgEff = Tg + (bR0 ? 6 : -10) + (bB0 ? 14 : -8);
+  const bG = gVal >= tgEff ? 1 : 0;
+
+  const trEff = Tr + (bG ? 14 : -10) + (bB0 ? 2 : -2);
+  const bR = rVal >= trEff ? 1 : 0;
+
+  const tbEff = Tb + (bR ? 13 : -10) + (bG ? 13 : -10);
+  const bB = bVal >= tbEff ? 1 : 0;
+
+  const mR = Math.abs(rVal - trEff);
+  const mG = Math.abs(gVal - tgEff);
+  const mB = Math.abs(bVal - tbEff);
+
+  return {
+    sym: (bR << 2) | (bG << 1) | bB,
+    margin: Math.min(mR, mG, mB)
+  };
+}
+
+/**
+ * Samples all 80x80 cell centers across the grid.
+ *
+ * @param {Uint8ClampedArray|Uint8Array} rgba - Camera frame buffer
+ * @param {number} width - Camera width
+ * @param {number} height - Camera height
+ * @param {Float64Array} H - Homography matrix
+ * @param {TimingRefiner} timingRefiner - Timing offset provider
+ * @param {Float32Array} [outGridRgb] - Preallocated 80x80x3 buffer
+ * @returns {{ ok: boolean, gridRgb: Float32Array }}
+ */
+export function sampleFullGrid(rgba, width, height, H, timingRefiner, outGridRgb, outInBounds = null) {
+  const gridRgb = outGridRgb || new Float32Array(6400 * 3);
+  let allInBounds = true;
+
+  for (let r = 0; r < 80; r++) {
+    for (let c = 0; c < 80; c++) {
+      let du = 0, dv = 0;
+      if (timingRefiner) {
+        const off = timingRefiner.getOffset(c, r);
+        du = off.du;
+        dv = off.dv;
+      }
+      const uRef = c + 0.5 + du;
+      const vRef = r + 0.5 + dv;
+
+      const { x, y } = projectH(H, uRef, vRef);
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const cellIdx = r * 80 + c;
+      const idx3 = cellIdx * 3;
+
+      if (x0 < 0 || x0 >= width - 1 || y0 < 0 || y0 >= height - 1) {
+        gridRgb[idx3] = 128;
+        gridRgb[idx3 + 1] = 128;
+        gridRgb[idx3 + 2] = 128;
+        if (outInBounds) outInBounds[cellIdx] = 0;
+        allInBounds = false;
+        continue;
+      }
+
+      if (outInBounds) outInBounds[cellIdx] = 1;
+
+      const fx = x - x0;
+      const fy = y - y0;
+      const o00 = (y0 * width + x0) * 4;
+      const o10 = o00 + 4;
+      const o01 = ((y0 + 1) * width + x0) * 4;
+      const o11 = o01 + 4;
+
+      const w00 = (1.0 - fx) * (1.0 - fy);
+      const w10 = fx * (1.0 - fy);
+      const w01 = (1.0 - fx) * fy;
+      const w11 = fx * fy;
+
+      gridRgb[idx3] = w00 * rgba[o00] + w10 * rgba[o10] + w01 * rgba[o01] + w11 * rgba[o11];
+      gridRgb[idx3 + 1] = w00 * rgba[o00 + 1] + w10 * rgba[o10 + 1] + w01 * rgba[o01 + 1] + w11 * rgba[o11 + 1];
+      gridRgb[idx3 + 2] = w00 * rgba[o00 + 2] + w10 * rgba[o10 + 2] + w01 * rgba[o01 + 2] + w11 * rgba[o11 + 2];
+    }
+  }
+
+  return { ok: allInBounds, gridRgb };
+}
 
 /**
  * Samples all data cells for a given stripe.
@@ -17,6 +119,10 @@ import { projectH } from './homography.js';
  * @param {Array<{r: number, c: number}>} stripeDataCells - List of data cell coordinates
  * @param {Uint8Array} [outSymbols] - Optional preallocated buffer
  * @param {Float32Array} [outMargins] - Optional preallocated margins buffer
+ * @param {Float32Array} [outRgb] - Optional buffer for deblurred RGB values
+ * @param {Float32Array} [outThresh] - Optional buffer for local thresholds
+ * @param {Float32Array} [precomputedGrid] - Optional pre-sampled 80x80x3 grid
+ * @param {Uint8Array} [inBounds] - Optional 80x80 bounds validity mask
  * @returns {{ ok: boolean, symbols: Uint8Array, margins: Float32Array }}
  */
 export function sampleStripeCells(
@@ -30,54 +136,68 @@ export function sampleStripeCells(
   outSymbols,
   outMargins,
   outRgb,
-  outThresh
+  outThresh,
+  precomputedGrid = null,
+  inBounds = null
 ) {
   const count = stripeDataCells.length;
   const symbols = outSymbols || new Uint8Array(count);
   const margins = outMargins || new Float32Array(count);
 
+  let gridRgb = precomputedGrid;
+  if (!gridRgb) {
+    const gridRes = sampleFullGrid(rgba, width, height, H, timingRefiner);
+    if (!gridRes.ok) {
+      // Check if stripe cells specifically are out of bounds
+      for (let i = 0; i < count; i++) {
+        const { r, c } = stripeDataCells[i];
+        const off = timingRefiner ? timingRefiner.getOffset(c, r) : { du: 0, dv: 0 };
+        const pt = projectH(H, c + 0.5 + off.du, r + 0.5 + off.dv);
+        const x0 = Math.floor(pt.x);
+        const y0 = Math.floor(pt.y);
+        if (x0 < 0 || x0 >= width - 1 || y0 < 0 || y0 >= height - 1) {
+          return { ok: false, symbols, margins };
+        }
+      }
+    }
+    gridRgb = gridRes.gridRgb;
+  } else if (inBounds) {
+    for (let i = 0; i < count; i++) {
+      const { r, c } = stripeDataCells[i];
+      if (inBounds[r * 80 + c] === 0) {
+        return { ok: false, symbols, margins };
+      }
+    }
+  }
+
+  const beta = 0.045;
+
   for (let i = 0; i < count; i++) {
     const { r, c } = stripeDataCells[i];
+    const cIdx = (r * 80 + c) * 3;
 
-    // Timing offset
-    const { du, dv } = timingRefiner.getOffset(c, r);
-    const uRef = c + 0.5 + du;
-    const vRef = r + 0.5 + dv;
+    let rVal = gridRgb[cIdx];
+    let gVal = gridRgb[cIdx + 1];
+    let bVal = gridRgb[cIdx + 2];
 
-    // Project into camera coordinates
-    const { x, y } = projectH(H, uRef, vRef);
-    const x0 = Math.floor(x);
-    const y0 = Math.floor(y);
+    let nR = 0, nG = 0, nB = 0, cnt = 0;
+    if (r > 0)    { const k = cIdx - 240; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+    if (r < 79)   { const k = cIdx + 240; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+    if (c > 0)    { const k = cIdx - 3;   nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+    if (c < 79)   { const k = cIdx + 3;   nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
 
-    // Bounds check
-    if (x0 < 0 || x0 >= width - 1 || y0 < 0 || y0 >= height - 1) {
-      return { ok: false, symbols, margins };
-    }
-
-    const fx = x - x0;
-    const fy = y - y0;
-    const o00 = (y0 * width + x0) * 4;
-    const o10 = o00 + 4;
-    const o01 = ((y0 + 1) * width + x0) * 4;
-    const o11 = o01 + 4;
-
-    const w00 = (1.0 - fx) * (1.0 - fy);
-    const w10 = fx * (1.0 - fy);
-    const w01 = (1.0 - fx) * fy;
-    const w11 = fx * fy;
-
-    const rAvg = w00 * rgba[o00] + w10 * rgba[o10] + w01 * rgba[o01] + w11 * rgba[o11];
-    const gAvg = w00 * rgba[o00 + 1] + w10 * rgba[o10 + 1] + w01 * rgba[o01 + 1] + w11 * rgba[o11 + 1];
-    const bAvg = w00 * rgba[o00 + 2] + w10 * rgba[o10 + 2] + w01 * rgba[o01 + 2] + w11 * rgba[o11 + 2];
+    rVal -= beta * (nR - cnt * rVal);
+    gVal -= beta * (nG - cnt * gVal);
+    bVal -= beta * (nB - cnt * bVal);
 
     // Local pilot thresholds
     const { Tr, Tg, Tb } = pilotCalibrator.getThresholds(c, r);
 
     if (outRgb) {
       const idx3 = i * 3;
-      outRgb[idx3] = rAvg;
-      outRgb[idx3 + 1] = gAvg;
-      outRgb[idx3 + 2] = bAvg;
+      outRgb[idx3] = rVal;
+      outRgb[idx3 + 1] = gVal;
+      outRgb[idx3 + 2] = bVal;
     }
     if (outThresh) {
       const idx3 = i * 3;
@@ -86,17 +206,9 @@ export function sampleStripeCells(
       outThresh[idx3 + 2] = Tb;
     }
 
-    // Adaptive cross-channel crosstalk compensation:
-    // Red channel has high separation; Magenta (R=1, B=1) leaks into Green (+36 counts),
-    // and Yellow (R=1, G=1) leaks into Blue (+51 counts).
-    const bR = rAvg >= Tr ? 1 : 0;
-    const tgEff = Tg + (bR === 1 ? 10 : -5);
-    const bG = gAvg >= tgEff ? 1 : 0;
-    const tbEff = Tb + ((bR === 1 && bG === 1) ? 20 : -6);
-    const bB = bAvg >= tbEff ? 1 : 0;
-
-    symbols[i] = (bR << 2) | (bG << 1) | bB;
-    margins[i] = Math.min(Math.abs(rAvg - Tr), Math.abs(gAvg - tgEff), Math.abs(bAvg - tbEff));
+    const res = sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb);
+    symbols[i] = res.sym;
+    margins[i] = res.margin;
   }
 
   return { ok: true, symbols, margins };

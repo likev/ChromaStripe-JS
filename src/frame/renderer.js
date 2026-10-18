@@ -65,6 +65,89 @@ function getFinderColor(u, v) {
   return isBR ? COLOR_MAGENTA : COLOR_CYAN;
 }
 
+  const TEMPLATE_CACHE = new Map();
+
+function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
+  const key = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}`;
+  let template = TEMPLATE_CACHE.get(key);
+  if (template) return template;
+
+  const totalBytes = imgDim * imgDim * 4;
+  template = new Uint8ClampedArray(totalBytes);
+  // Fill entire background with black and alpha = 255
+  for (let i = 3; i < totalBytes; i += 4) {
+    template[i] = 255;
+  }
+
+  const layout = getLayout();
+
+  const paintRect = (x, y, w, h, color) => {
+    const [r, g, b, a] = color;
+    for (let py = y; py < y + h; py++) {
+      let offset = (py * imgDim + x) * 4;
+      for (let px = 0; px < w; px++) {
+        template[offset] = r;
+        template[offset + 1] = g;
+        template[offset + 2] = b;
+        template[offset + 3] = a;
+        offset += 4;
+      }
+    }
+  };
+
+  // 1. Paint Finders (solid cells, no guard gaps)
+  for (let v = 0; v < GRID_SIZE; v++) {
+    for (let u = 0; u < GRID_SIZE; u++) {
+      const idx = v * GRID_SIZE + u;
+      if (layout.cellClass[idx] === 1 /* FINDER */) {
+        const { u: ru, v: rv } = rotateCoords(u, v, rotation);
+        const color = getFinderColor(u, v);
+        paintRect(ru * cellPx, rv * cellPx, cellPx, cellPx, color);
+      }
+    }
+  }
+
+  // 2. Paint Timing Bars (8s x 8s core + guard)
+  const paintTimingEdge = (edgeList) => {
+    for (let i = 0; i < edgeList.length; i++) {
+      const { r, c, isWhite } = edgeList[i];
+      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
+      const color = isWhite ? COLOR_WHITE : COLOR_FLOOR;
+      paintRect(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, color);
+    }
+  };
+  paintTimingEdge(layout.timingEdges.top);
+  paintTimingEdge(layout.timingEdges.bottom);
+  paintTimingEdge(layout.timingEdges.left);
+  paintTimingEdge(layout.timingEdges.right);
+
+  // 3. Paint Pilot Blocks
+  const pilotColors = [
+    COLOR_WHITE,
+    COLOR_FLOOR,
+    [40, 255, 255, 255], // Cyan
+    [255, 40, 255, 255]  // Magenta
+  ];
+
+  for (let i = 0; i < layout.pilotBlocks.length; i++) {
+    const { r: rBase, c: cBase } = layout.pilotBlocks[i];
+    const cellDefs = [
+      { r: rBase, c: cBase, color: pilotColors[0] },
+      { r: rBase, c: cBase + 1, color: pilotColors[1] },
+      { r: rBase + 1, c: cBase, color: pilotColors[2] },
+      { r: rBase + 1, c: cBase + 1, color: pilotColors[3] }
+    ];
+    for (let cd = 0; cd < 4; cd++) {
+      const { r, c, color } = cellDefs[cd];
+      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
+      paintRect(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, color);
+    }
+  }
+
+  TEMPLATE_CACHE.set(key, template);
+  return template;
+}
+
 /**
  * Renders a full frame (4 stripe packets) into an RGBA buffer.
  *
@@ -101,16 +184,12 @@ export function renderFrame(stripePackets, options = {}) {
   const rgba = (options.outRgba && options.outRgba.length === totalBytes)
     ? options.outRgba
     : new Uint8ClampedArray(totalBytes);
-  // Fill entire background with black
-  rgba.fill(0);
-  // Set alpha channel to 255
-  for (let i = 3; i < totalBytes; i += 4) {
-    rgba[i] = 255;
-  }
+
+  const staticTemplate = getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation);
+  rgba.set(staticTemplate);
 
   const layout = getLayout();
 
-  // Helper to paint a cell core (or solid block for finder)
   const paintRect = (x, y, w, h, color) => {
     const [r, g, b, a] = color;
     for (let py = y; py < y + h; py++) {
@@ -124,57 +203,6 @@ export function renderFrame(stripePackets, options = {}) {
       }
     }
   };
-
-  // 1. Paint Finders (solid cells, no guard gaps)
-  for (let v = 0; v < GRID_SIZE; v++) {
-    for (let u = 0; u < GRID_SIZE; u++) {
-      const idx = v * GRID_SIZE + u;
-      if (layout.cellClass[idx] === 1 /* FINDER */) {
-        const { u: ru, v: rv } = rotateCoords(u, v, rotation);
-        const color = getFinderColor(u, v);
-        paintRect(ru * cellPx, rv * cellPx, cellPx, cellPx, color);
-      }
-    }
-  }
-
-  // 2. Paint Timing Bars (8s x 8s core + guard)
-  const paintTimingEdge = (edgeList) => {
-    for (let i = 0; i < edgeList.length; i++) {
-      const { r, c, isWhite } = edgeList[i];
-      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
-      const color = isWhite ? COLOR_WHITE : COLOR_FLOOR;
-      paintRect(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, color);
-    }
-  };
-  paintTimingEdge(layout.timingEdges.top);
-  paintTimingEdge(layout.timingEdges.bottom);
-  paintTimingEdge(layout.timingEdges.left);
-  paintTimingEdge(layout.timingEdges.right);
-
-  // 3. Paint Pilot Blocks
-  // [W (255,255,255) | K (40,40,40)]
-  // [C (40,255,255)  | M (255,40,255)]
-  const pilotColors = [
-    COLOR_WHITE,
-    COLOR_FLOOR,
-    [40, 255, 255, 255], // Cyan
-    [255, 40, 255, 255]  // Magenta
-  ];
-
-  for (let i = 0; i < layout.pilotBlocks.length; i++) {
-    const { r: rBase, c: cBase } = layout.pilotBlocks[i];
-    const cellDefs = [
-      { r: rBase, c: cBase, color: pilotColors[0] },
-      { r: rBase, c: cBase + 1, color: pilotColors[1] },
-      { r: rBase + 1, c: cBase, color: pilotColors[2] },
-      { r: rBase + 1, c: cBase + 1, color: pilotColors[3] }
-    ];
-    for (let cd = 0; cd < 4; cd++) {
-      const { r, c, color } = cellDefs[cd];
-      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
-      paintRect(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, color);
-    }
-  }
 
   // 4. Paint Data Stripes
   for (let s = 0; s < 4; s++) {

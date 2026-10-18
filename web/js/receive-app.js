@@ -16,6 +16,7 @@ let workerBusy = false;
 let startTime = 0;
 let rxStartTime = 0;
 let totalBytesReceived = 0;
+let lastCorners = null;
 
 const startBtn = document.getElementById('startCameraBtn');
 const cameraArea = document.getElementById('cameraArea');
@@ -34,6 +35,7 @@ worker = new Worker(new URL('./rx-worker.js', import.meta.url), { type: 'module'
 worker.onmessage = (e) => {
   workerBusy = false;
   const { type, ok, corners, stripes, progress, decodeMs, result } = e.data;
+  lastCorners = (corners && corners.TL && corners.TR && corners.BL && corners.BR) ? corners : null;
 
   // Render overlay graphics
   renderOverlay(corners, stripes);
@@ -231,14 +233,32 @@ function captureLoop() {
       workerBusy = true;
       try {
         offscreenCtx.drawImage(video, 0, 0);
-        const imgData = offscreenCtx.getImageData(0, 0, vw, vh);
+
+        let sx = 0, sy = 0, sw = vw, sh = vh;
+        if (lastCorners) {
+          const minX = Math.max(0, Math.floor(Math.min(lastCorners.TL.x, lastCorners.TR.x, lastCorners.BL.x, lastCorners.BR.x) - 64));
+          const minY = Math.max(0, Math.floor(Math.min(lastCorners.TL.y, lastCorners.TR.y, lastCorners.BL.y, lastCorners.BR.y) - 64));
+          const maxX = Math.min(vw, Math.ceil(Math.max(lastCorners.TL.x, lastCorners.TR.x, lastCorners.BL.x, lastCorners.BR.x) + 64));
+          const maxY = Math.min(vh, Math.ceil(Math.max(lastCorners.TL.y, lastCorners.TR.y, lastCorners.BL.y, lastCorners.BR.y) + 64));
+          const cw = maxX - minX;
+          const ch = maxY - minY;
+          if (cw >= 160 && ch >= 160 && (cw * ch) < (vw * vh * 0.85)) {
+            sx = minX;
+            sy = minY;
+            sw = cw;
+            sh = ch;
+          }
+        }
+
+        const imgData = offscreenCtx.getImageData(sx, sy, sw, sh);
 
         worker.postMessage(
           {
             type: 'decode_frame',
             rgba: imgData.data,
-            width: vw,
-            height: vh
+            width: sw,
+            height: sh,
+            roi: (sw !== vw || sh !== vh) ? { x: sx, y: sy } : null
           },
           [imgData.data.buffer] // Transferable buffer
         );

@@ -483,3 +483,203 @@ export function rsDecode(codeword, nsym, inPlace = false, erasures = []) {
 
   return { ok: true, corrected: errPos.length, codeword: cw };
 }
+
+/**
+ * Fast error-and-erasure decoder for packet parsing.
+ * Reuses syndromes across erasure counts, incrementally updates gamma(x),
+ * and avoids false-positive 1-degree roots by capping erasures at nsym - 4.
+ *
+ * @param {Uint8Array} cw - Codeword of length n (modified in place on success)
+ * @param {number} nsym - Number of parity symbols
+ * @param {Float32Array|number[]} [margins] - Optional byte confidence margins
+ * @returns {{ ok: boolean, corrected: number, codeword: Uint8Array }}
+ */
+export function fastDecodeCodeword(cw, nsym, margins = null) {
+  const n = cw.length;
+  const syndromes = rsSyndromes(cw, nsym);
+
+  // 1. Zero syndromes => perfect codeword
+  if (!syndromes) {
+    return { ok: true, corrected: 0, codeword: cw };
+  }
+
+  // 2. Pure error correction trial (no erasures)
+  const bm = berlekampMassey(syndromes, nsym);
+  if (bm && bm.degree > 0 && bm.degree <= (nsym >> 1)) {
+    const errPos = chienSearch(bm.lambda, n, bm.degree);
+    if (errPos && errPos.length === bm.degree) {
+      const candidate = new Uint8Array(cw);
+      if (forneyCorrection(candidate, syndromes, bm.lambda, errPos)) {
+        if (rsSyndromes(candidate, nsym) === null) {
+          cw.set(candidate);
+          return { ok: true, corrected: errPos.length, codeword: cw };
+        }
+      }
+    }
+  }
+
+  // 3. If no margins available, we cannot do erasures
+  if (!margins || margins.length !== n) {
+    return { ok: false, corrected: 0, codeword: cw };
+  }
+
+  // Sort codeword byte indices ascending by margin (lowest margin = most likely erasure)
+  const indexed = new Array(n);
+  for (let i = 0; i < n; i++) indexed[i] = i;
+  indexed.sort((a, b) => margins[a] - margins[b]);
+
+  const isErasure = new Uint8Array(n);
+  let gamma = new Uint8Array([1]);
+  let prevE = 0;
+  const maxE = nsym - 4; // Ensure at least 2 error degrees of freedom (t >= 2)
+
+  for (const numE of [4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24]) {
+    if (numE > maxE || numE >= n) break;
+
+    // Incrementally extend gamma(x) with newly added erasures
+    for (let i = prevE; i < numE; i++) {
+      const pos = indexed[i];
+      isErasure[pos] = 1;
+      const power = (n - 1 - pos) % 255;
+      const Xi = EXP[power];
+      gamma = polyMul(gamma, new Uint8Array([1, Xi]));
+    }
+    prevE = numE;
+
+    // Modified syndromes: Xi(x) = (S(x) * Gamma(x)) mod x^nsym
+    const modSyn = new Uint8Array(nsym);
+    for (let i = 0; i < nsym; i++) {
+      let sum = 0;
+      for (let j = 0; j <= i && j < gamma.length; j++) {
+        if (gamma[j] && syndromes[i - j]) {
+          sum ^= gfMul(gamma[j], syndromes[i - j]);
+        }
+      }
+      modSyn[i] = sum;
+    }
+
+    // Berlekamp-Massey on modified syndromes starting from step = numE
+    let c = [1];
+    let b = [1];
+    let l = 0;
+    let m = 1;
+    let bVal = 1;
+
+    for (let step = numE; step < nsym; step++) {
+      let d = modSyn[step];
+      for (let i = 1; i <= l; i++) {
+        if (c[i] && (step - i) >= 0) {
+          d ^= gfMul(c[i], modSyn[step - i]);
+        }
+      }
+
+      if (d === 0) {
+        m++;
+      } else {
+        const t = c.slice();
+        const coeff = gfDiv(d, bVal);
+        while (c.length < b.length + m) c.push(0);
+        for (let i = 0; i < b.length; i++) {
+          if (b[i]) c[i + m] ^= gfMul(coeff, b[i]);
+        }
+        if (2 * l <= step - numE) {
+          l = step + 1 - numE - l;
+          b = t;
+          bVal = d;
+          m = 1;
+        } else {
+          m++;
+        }
+      }
+    }
+
+    while (c.length > 0 && c[c.length - 1] === 0) c.pop();
+    const numErrors = c.length - 1;
+
+    if (2 * numErrors + numE > nsym) {
+      continue;
+    }
+
+    // Combined locator polynomial: Lambda(x) = Gamma(x) * Lambda_err(x)
+    const lambda = polyMul(gamma, new Uint8Array(c));
+    const erasuresSubset = indexed.slice(0, numE);
+    const allPositions = erasuresSubset.slice();
+
+    if (numErrors > 0) {
+      const lambdaErr = new Uint8Array(c);
+      const errPos = [];
+      for (let pos = 0; pos < n; pos++) {
+        if (isErasure[pos]) continue;
+        const expVal = (255 - ((n - 1 - pos) % 255)) % 255;
+        const invX = EXP[expVal];
+        let sum = 1;
+        let xPow = 1;
+        for (let j = 1; j <= numErrors; j++) {
+          xPow = gfMul(xPow, invX);
+          if (lambdaErr[j]) sum ^= gfMul(lambdaErr[j], xPow);
+        }
+        if (sum === 0) {
+          errPos.push(pos);
+        }
+      }
+      if (errPos.length !== numErrors) {
+        continue;
+      }
+      allPositions.push(...errPos);
+    }
+
+    // Forney algorithm for error values
+    const omega = new Uint8Array(nsym);
+    for (let i = 0; i < nsym; i++) {
+      let sum = 0;
+      for (let j = 0; j <= i && j < lambda.length; j++) {
+        if (lambda[j] && syndromes[i - j]) {
+          sum ^= gfMul(lambda[j], syndromes[i - j]);
+        }
+      }
+      omega[i] = sum;
+    }
+
+    const candidate = new Uint8Array(cw);
+    let forneyOk = true;
+
+    for (let idx = 0; idx < allPositions.length; idx++) {
+      const pos = allPositions[idx];
+      const power = (n - 1 - pos) % 255;
+      const Xi = EXP[power];
+      const invXi = EXP[(255 - power) % 255];
+
+      let num = 0;
+      let invXiPow = 1;
+      for (let j = 0; j < nsym; j++) {
+        if (omega[j]) num ^= gfMul(omega[j], invXiPow);
+        invXiPow = gfMul(invXiPow, invXi);
+      }
+
+      let den = 0;
+      let invXiKMinus1 = 1;
+      for (let k = 1; k < lambda.length; k += 2) {
+        if (lambda[k]) den ^= gfMul(lambda[k], invXiKMinus1);
+        if (k + 2 < lambda.length) {
+          invXiKMinus1 = gfMul(invXiKMinus1, gfMul(invXi, invXi));
+        }
+      }
+
+      if (den === 0) {
+        forneyOk = false;
+        break;
+      }
+      const errVal = gfMul(Xi, gfDiv(num, den));
+      candidate[pos] ^= errVal;
+    }
+
+    if (!forneyOk) continue;
+
+    if (rsSyndromes(candidate, nsym) === null) {
+      cw.set(candidate);
+      return { ok: true, corrected: allPositions.length, codeword: cw };
+    }
+  }
+
+  return { ok: false, corrected: 0, codeword: cw };
+}

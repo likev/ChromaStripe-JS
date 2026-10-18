@@ -1,5 +1,5 @@
 import { test, assert } from '../harness.js';
-import { rsEncode, rsDecode, rsSyndromes } from '../../src/core/reedsolomon.js';
+import { rsEncode, rsDecode, rsSyndromes, fastDecodeCodeword } from '../../src/core/reedsolomon.js';
 import { PRNG } from '../../src/core/prng.js';
 
 test('reedsolomon: systematic encode produces zero syndromes', () => {
@@ -136,4 +136,48 @@ test('reedsolomon: corrects mixed errors and erasures (2t + e <= nsym)', () => {
   assert.strictEqual(res.ok, true);
   assert.strictEqual(res.corrected, 16);
   assert.deepStrictEqual(res.codeword, cleanCodeword);
+});
+
+test('reedsolomon: fastDecodeCodeword corrects clean, pure errors, and soft erasures', () => {
+  const rng = new PRNG(888);
+  const k = 154;
+  const nsym = 28;
+  const data = new Uint8Array(k);
+  for (let i = 0; i < k; i++) data[i] = rng.nextBelow(256);
+  const parity = rsEncode(data, nsym);
+  const cleanCodeword = new Uint8Array(k + nsym);
+  cleanCodeword.set(data, 0);
+  cleanCodeword.set(parity, k);
+
+  // 1. Clean codeword
+  const rClean = fastDecodeCodeword(new Uint8Array(cleanCodeword), nsym);
+  assert.strictEqual(rClean.ok, true);
+  assert.strictEqual(rClean.corrected, 0);
+
+  // 2. Pure error correction up to t=14
+  const cwErr = new Uint8Array(cleanCodeword);
+  for (let i = 0; i < 10; i++) cwErr[i * 10] ^= 0x33;
+  const rErr = fastDecodeCodeword(cwErr, nsym);
+  assert.strictEqual(rErr.ok, true);
+  assert.strictEqual(rErr.corrected, 10);
+  assert.deepStrictEqual(cwErr, cleanCodeword);
+
+  // 3. Mixed errors and erasures with soft margins
+  const cwMixed = new Uint8Array(cleanCodeword);
+  const margins = new Float32Array(cleanCodeword.length).fill(100.0);
+  // 8 erasures with low margin + 8 errors with high margin = 16 corruptions
+  for (let i = 0; i < 8; i++) {
+    const pos = i * 6;
+    cwMixed[pos] ^= 0x44;
+    margins[pos] = 5.0; // soft erasure marker
+  }
+  for (let i = 0; i < 8; i++) {
+    const pos = 100 + i * 6;
+    cwMixed[pos] ^= 0x77;
+    margins[pos] = 90.0;
+  }
+  const rMixed = fastDecodeCodeword(cwMixed, nsym, margins);
+  assert.strictEqual(rMixed.ok, true);
+  assert.strictEqual(rMixed.corrected, 16);
+  assert.deepStrictEqual(cwMixed, cleanCodeword);
 });

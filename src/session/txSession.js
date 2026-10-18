@@ -122,7 +122,19 @@ export class TxSession {
     }
 
     const f = this.frameNo++;
-    const seeds = [4 * f, 4 * f + 1, 4 * f + 2, 4 * f + 3];
+    let seeds;
+    if (this.K > 8) {
+      const cycleLen = this.K * 3;
+      const rawSeeds = [4 * f, 4 * f + 1, 4 * f + 2, 4 * f + 3];
+      seeds = rawSeeds.map(s => {
+        if (s >= cycleLen && (s % cycleLen) < this.K) {
+          return s % cycleLen;
+        }
+        return s;
+      });
+    } else {
+      seeds = [4 * f, 4 * f + 1, 4 * f + 2, 4 * f + 3];
+    }
     const packets = new Array(4);
 
     for (let i = 0; i < 4; i++) {

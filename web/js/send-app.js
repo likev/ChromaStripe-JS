@@ -207,21 +207,27 @@ startBtn.addEventListener('click', () => {
   vsyncCount = 0;
   totalFramesSent = 0;
   startTime = performance.now();
+  lastFrameTime = 0;
 
   requestAnimationFrame(renderLoop);
 });
 
 pauseBtn.addEventListener('click', () => {
   isPaused = !isPaused;
+  if (!isPaused) lastFrameTime = 0;
   pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
 });
 
-// Main render loop locked to vsync
-function renderLoop() {
+let lastFrameTime = 0;
+
+// Main render loop with timestamp-based pacing (immune to 60/90/120 Hz VSync jitter)
+function renderLoop(now) {
   if (!isRunning) return;
 
   if (!isPaused) {
-    if (vsyncCount % txHold === 0) {
+    const targetIntervalMs = (txHold / 60) * 1000;
+    if (!lastFrameTime || (now - lastFrameTime) >= targetIntervalMs - 4) {
+      lastFrameTime = now;
       const frame = session.getNextFrame();
       renderer.displayFrame(frame.rgba, frame.width, frame.height);
       totalFramesSent++;
@@ -235,7 +241,6 @@ function renderLoop() {
       document.getElementById('hudTime').textContent = formatTime(elapsed);
       document.getElementById('hudFps').textContent = (totalFramesSent / Math.max(1, elapsed)).toFixed(1);
     }
-    vsyncCount++;
   }
 
   animFrameId = requestAnimationFrame(renderLoop);

@@ -20,9 +20,11 @@ self.onmessage = async (e) => {
     }
 
     if (type === 'decode_frame') {
+      const { rgba, width, height, roi } = e.data;
       const t0 = performance.now();
-      const decRes = decoder.decode(rgba, width, height);
+      const decRes = decoder.decode(rgba, width, height, roi);
       const decodeMs = performance.now() - t0;
+      const corners = decRes.corners;
 
       let validCount = 0;
       if (decRes.ok) {
@@ -39,8 +41,9 @@ self.onmessage = async (e) => {
       if (rxSession.isComplete) {
         self.postMessage({
           type: 'complete',
+          ok: true,
           result: rxSession.result,
-          corners: decRes.corners,
+          corners,
           stripes: decRes.stripes,
           progress,
           decodeMs
@@ -49,7 +52,7 @@ self.onmessage = async (e) => {
         self.postMessage({
           type: 'frame_result',
           ok: decRes.ok,
-          corners: decRes.corners,
+          corners,
           stripes: decRes.stripes,
           progress,
           decodeMs
