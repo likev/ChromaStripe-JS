@@ -8,24 +8,64 @@ import { solveHomography } from './homography.js';
 import { TimingRefiner } from './timing.js';
 import { PilotCalibrator } from './pilots.js';
 import { sampleStripeCells, sampleFullGrid, sliceCellCausal, sliceCellCentroid } from './sampler.js';
-import { getLayout } from '../frame/layout.js';
-import { symbolsToBytes, symbolsMarginsToByteMargins, bytesToSymbols } from '../core/bitpack.js';
-import { parsePacket, buildPacket } from '../frame/packet.js';
-import { PACKET_TOTAL_BYTES } from '../frame/constants.js';
+import { getLayout, getLayoutV2 } from '../frame/layout.js';
+import {
+  symbolsToBytes,
+  symbolsMarginsToByteMargins,
+  symbolsToBytesMultiBit,
+  symbolsMarginsToByteMarginsMultiBit,
+  bytesToSymbols
+} from '../core/bitpack.js';
+import { parsePacket, parsePacketV2, buildPacket } from '../frame/packet.js';
+import {
+  PACKET_TOTAL_BYTES,
+  V2_PACKET_BYTES_HIGH_RATE,
+  V2_PACKET_BYTES_STANDARD,
+  GRID_SIZE
+} from '../frame/constants.js';
 
 export class FrameDecoder {
-  constructor() {
-    this.layout = getLayout();
+  constructor(options = {}) {
+    this.options = { ...options };
+    this.version = options.version || 1;
+    this.gridSize = options.gridSize || GRID_SIZE;
+    this.bitsPerCell = options.bitsPerCell || (this.version === 2 ? 6 : 3);
+    this.numStripes = options.numStripes || (this.version === 2 ? 8 : 4);
+    this.rateMode = options.rateMode ?? 1;
+
+    this.layoutV1 = getLayout();
+    this.layoutV2 = getLayoutV2({ gridSize: this.gridSize, numStripes: 8 });
+    this.layout = this.version === 2 ? this.layoutV2 : this.layoutV1;
     this.prevCorners = null;
     this.lockCount = 0;
     this.missCount = 0;
-    this.gridRgb = new Float32Array(6400 * 3);
-    this.gridInBounds = new Uint8Array(6400);
+
+    const totalCells = this.gridSize * this.gridSize;
+    this.gridRgb = new Float32Array(totalCells * 3);
+    this.gridInBounds = new Uint8Array(totalCells);
     this.centroids = null;
     this.lastCleanStripe = -1;
     this.lastCleanThresh = null;
     this.k1 = null;
-    this.stripeAccum = Array.from({ length: 4 }, () => ({
+
+    this.stripeAccumV1 = Array.from({ length: 4 }, () => this._newStripeSlot());
+    this.stripeAccumV2 = Array.from({ length: 8 }, () => this._newStripeSlot());
+  }
+
+  get stripeAccum() {
+    return this.version === 2 ? this.stripeAccumV2 : this.stripeAccumV1;
+  }
+
+  set stripeAccum(val) {
+    if (this.version === 2) {
+      this.stripeAccumV2 = val;
+    } else {
+      this.stripeAccumV1 = val;
+    }
+  }
+
+  _newStripeSlot() {
+    return {
       count: 0,
       curRgb: null,
       curThresh: null,
@@ -38,7 +78,66 @@ export class FrameDecoder {
       hasPrev: false,
       decodedInHold: false,
       lastResult: null
-    }));
+    };
+  }
+
+  _allocateStripeState(st, count) {
+    st.curRgb = new Float32Array(count * 3);
+    st.curThresh = new Float32Array(count * 3);
+    st.sumRgb = new Float32Array(count * 3);
+    st.sumThresh = new Float32Array(count * 3);
+    st.prevRgb = new Float32Array(count * 3);
+    st.prevThresh = new Float32Array(count * 3);
+    st.accumSymbols = new Uint8Array(count);
+    st.accumMargins = new Float32Array(count);
+    st.hasPrev = false;
+    st.count = 0;
+    st.decodedInHold = false;
+    st.lastResult = null;
+  }
+
+  setOptions(options = {}) {
+    let changed = false;
+    if (options.version !== undefined && options.version !== this.version) {
+      this.version = options.version;
+      changed = true;
+    }
+    if (options.gridSize !== undefined && options.gridSize !== this.gridSize) {
+      this.gridSize = options.gridSize;
+      changed = true;
+    }
+    if (options.bitsPerCell !== undefined && options.bitsPerCell !== this.bitsPerCell) {
+      this.bitsPerCell = options.bitsPerCell;
+      changed = true;
+    } else if (this.version === 2 && this.bitsPerCell === 3) {
+      this.bitsPerCell = 6;
+      changed = true;
+    }
+    if (options.numStripes !== undefined && options.numStripes !== this.numStripes) {
+      this.numStripes = options.numStripes;
+      changed = true;
+    } else if (this.version === 2 && this.numStripes === 4) {
+      this.numStripes = 8;
+      changed = true;
+    }
+    if (options.rateMode !== undefined) {
+      this.rateMode = options.rateMode;
+    }
+
+    if (changed) {
+      this.layoutV1 = getLayout();
+      this.layoutV2 = getLayoutV2({ gridSize: this.gridSize, numStripes: this.numStripes || 8 });
+      this.layout = this.version === 2 ? this.layoutV2 : this.layoutV1;
+      const totalCells = this.gridSize * this.gridSize;
+      this.gridRgb = new Float32Array(totalCells * 3);
+      this.gridInBounds = new Uint8Array(totalCells);
+      this._resetAccum();
+    }
+  }
+
+  _initStripeAccum() {
+    this.stripeAccumV1 = Array.from({ length: 4 }, () => this._newStripeSlot());
+    this.stripeAccumV2 = Array.from({ length: 8 }, () => this._newStripeSlot());
   }
 
   _resetAccum() {
@@ -47,11 +146,22 @@ export class FrameDecoder {
     this.lastCleanThresh = null;
     this.k1 = null;
     for (let s = 0; s < 4; s++) {
-      const st = this.stripeAccum[s];
-      st.count = 0;
-      st.hasPrev = false;
-      st.decodedInHold = false;
-      st.lastResult = null;
+      const st = this.stripeAccumV1[s];
+      if (st) {
+        st.count = 0;
+        st.hasPrev = false;
+        st.decodedInHold = false;
+        st.lastResult = null;
+      }
+    }
+    for (let s = 0; s < 8; s++) {
+      const st = this.stripeAccumV2[s];
+      if (st) {
+        st.count = 0;
+        st.hasPrev = false;
+        st.decodedInHold = false;
+        st.lastResult = null;
+      }
     }
   }
 
@@ -163,7 +273,10 @@ export class FrameDecoder {
    *   stats?: object
    * }}
    */
-  decode(rgba, width, height, roi = null) {
+  decode(rgba, width, height, roi = null, options = null) {
+    if (options) {
+      this.setOptions(options);
+    }
     const t0 = performance.now();
 
     // 1. Finder detection / tracking
@@ -197,7 +310,7 @@ export class FrameDecoder {
     this.lockCount++;
 
     // 2. Solve Homography
-    const H = solveHomography([corners.TL, corners.TR, corners.BL, corners.BR]);
+    const H = solveHomography([corners.TL, corners.TR, corners.BL, corners.BR], this.gridSize);
     if (!H) {
       this._resetAccum();
       return {
@@ -208,47 +321,215 @@ export class FrameDecoder {
       };
     }
 
-    // 3. Timing track refinement & lens distortion compensation
+    // 3. Timing track refinement & lens distortion compensation (parametrized with this.gridSize)
     const timingRefiner = new TimingRefiner(
       rgba,
       width,
       height,
       H,
       [corners.TL, corners.TR, corners.BL, corners.BR],
-      this.k1
+      this.k1,
+      this.gridSize
     );
     if (this.k1 === null) {
       this.k1 = timingRefiner.bestK1;
     }
 
     // 4. Pilot calibration with timing offset
-    const pilotCalibrator = new PilotCalibrator(rgba, width, height, H, timingRefiner);
+    const pilotCalibrator = new PilotCalibrator(rgba, width, height, H, timingRefiner, { gridSize: this.gridSize });
 
-    // 5. Pre-sample full 80x80 cell grid once for all stripes
-    sampleFullGrid(rgba, width, height, H, timingRefiner, this.gridRgb, this.gridInBounds);
+    // 5. Pre-sample full cell grid once for all stripes
+    sampleFullGrid(rgba, width, height, H, timingRefiner, this.gridRgb, this.gridInBounds, this.gridSize);
 
-    // 6. Sample and decode each of the 4 stripes
-    const stripes = new Array(4);
+    let resV2 = null;
+    let resV1 = null;
+
+    if (this.version === 2 || this.version === 'auto') {
+      resV2 = this._decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator);
+      if (this.version === 2 || resV2.validStripesCount > 0) {
+        if (resV2.validStripesCount > 0) {
+          this.missCount = 0;
+        } else {
+          this.missCount = (this.missCount || 0) + 1;
+        }
+
+        if (this.lockCount >= 120) {
+          this.prevCorners = null;
+          this.lockCount = 0;
+        }
+
+        return {
+          ok: resV2.validStripesCount > 0,
+          corners: globalCorners,
+          stripes: resV2.stripes,
+          stats: {
+            totalMs: performance.now() - t0,
+            validStripesCount: resV2.validStripesCount,
+            version: 2
+          }
+        };
+      }
+    }
+
+    if (this.version === 1 || this.version === 'auto') {
+      resV1 = this._decodeV1Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator);
+      if (resV1.validStripesCount > 0) {
+        this.missCount = 0;
+      } else {
+        this.missCount = (this.missCount || 0) + 1;
+      }
+
+      if (this.lockCount >= 120) {
+        this.prevCorners = null;
+        this.lockCount = 0;
+      }
+
+      return {
+        ok: resV1.validStripesCount > 0,
+        corners: globalCorners,
+        stripes: resV1.stripes,
+        stats: {
+          totalMs: performance.now() - t0,
+          validStripesCount: resV1.validStripesCount,
+          version: resV1.validStripesCount > 0 ? 1 : (this.version === 'auto' ? 'auto' : 1)
+        }
+      };
+    }
+
+    return {
+      ok: false,
+      corners: globalCorners,
+      stripes: resV2 ? resV2.stripes : (resV1 ? resV1.stripes : []),
+      stats: {
+        totalMs: performance.now() - t0,
+        validStripesCount: 0,
+        version: this.version
+      }
+    };
+  }
+
+  _decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator) {
+    const numStripes = (this.version === 2 && this.numStripes) ? this.numStripes : 8;
+    const layout = this.layoutV2 || getLayoutV2({ gridSize: this.gridSize, numStripes });
+    const stripes = new Array(numStripes);
     let validStripesCount = 0;
+    const bpc = (this.version === 2 && this.bitsPerCell) ? this.bitsPerCell : 6;
 
-    for (let s = 0; s < 4; s++) {
-      const dataCells = this.layout.stripeDataCells[s];
+    for (let s = 0; s < numStripes; s++) {
+      const dataCells = layout.stripeDataCells[s];
       const count = dataCells.length;
-      const st = this.stripeAccum[s];
+      let st = this.stripeAccumV2[s];
+      if (!st) {
+        st = this._newStripeSlot();
+        this.stripeAccumV2[s] = st;
+      }
 
       if (!st.curRgb || st.curRgb.length !== count * 3) {
-        st.curRgb = new Float32Array(count * 3);
-        st.curThresh = new Float32Array(count * 3);
-        st.sumRgb = new Float32Array(count * 3);
-        st.sumThresh = new Float32Array(count * 3);
-        st.prevRgb = new Float32Array(count * 3);
-        st.prevThresh = new Float32Array(count * 3);
-        st.accumSymbols = new Uint8Array(count);
-        st.accumMargins = new Float32Array(count);
-        st.hasPrev = false;
+        this._allocateStripeState(st, count);
+      }
+
+      const sampleRes = sampleStripeCells(
+        rgba,
+        width,
+        height,
+        H,
+        timingRefiner,
+        pilotCalibrator,
+        dataCells,
+        st.accumSymbols,
+        st.accumMargins,
+        st.curRgb,
+        st.curThresh,
+        this.gridRgb,
+        this.gridInBounds,
+        { gridSize: this.gridSize, bitsPerCell: bpc }
+      );
+
+      if (!sampleRes.ok) {
         st.count = 0;
+        st.hasPrev = false;
         st.decodedInHold = false;
         st.lastResult = null;
+        stripes[s] = { stripeIdx: s, ok: false, error: 'SAMPLE_OUT_OF_BOUNDS' };
+        continue;
+      }
+
+      let packetRes = { ok: false };
+      // Check Turbo 488 / 496 bytes if stripe cell count supports it
+      if (sampleRes.symbols.length * bpc >= 488 * 8) {
+        const pkt488 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, 488);
+        const m488 = sampleRes.margins
+          ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, 488)
+          : null;
+        packetRes = parsePacketV2(pkt488, s, m488);
+        if (!packetRes.ok && sampleRes.symbols.length * bpc >= 496 * 8) {
+          const pkt496 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, 496);
+          const m496 = sampleRes.margins
+            ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, 496)
+            : null;
+          packetRes = parsePacketV2(pkt496, s, m496);
+        }
+      }
+
+      // Check High-Rate single-codeword (250 bytes)
+      if (!packetRes.ok) {
+        const pkt250 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, V2_PACKET_BYTES_HIGH_RATE);
+        const m250 = sampleRes.margins
+          ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, V2_PACKET_BYTES_HIGH_RATE)
+          : null;
+        packetRes = parsePacketV2(pkt250, s, m250);
+      }
+
+      // Check Standard rate single-codeword (254 bytes)
+      if (!packetRes.ok) {
+        const pkt254 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, V2_PACKET_BYTES_STANDARD);
+        const m254 = sampleRes.margins
+          ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, V2_PACKET_BYTES_STANDARD)
+          : null;
+        packetRes = parsePacketV2(pkt254, s, m254);
+      }
+
+      if (packetRes.ok) {
+        stripes[s] = {
+          stripeIdx: s,
+          ok: true,
+          header: packetRes.header,
+          payloadU32: packetRes.payloadU32,
+          corrected: packetRes.corrected
+        };
+        validStripesCount++;
+        st.lastResult = stripes[s];
+        st.prevRgb.set(st.curRgb);
+        st.prevThresh.set(st.curThresh);
+        st.hasPrev = true;
+      } else {
+        stripes[s] = {
+          stripeIdx: s,
+          ok: false,
+          error: packetRes.error || 'DECODE_FAILED'
+        };
+      }
+    }
+
+    return { stripes, validStripesCount };
+  }
+
+  _decodeV1Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator) {
+    const stripes = new Array(4);
+    let validStripesCount = 0;
+    const layout = this.layoutV1 || getLayout();
+
+    for (let s = 0; s < 4; s++) {
+      const dataCells = layout.stripeDataCells[s];
+      const count = dataCells.length;
+      let st = this.stripeAccumV1[s];
+      if (!st) {
+        st = this._newStripeSlot();
+        this.stripeAccumV1[s] = st;
+      }
+
+      if (!st.curRgb || st.curRgb.length !== count * 3) {
+        this._allocateStripeState(st, count);
       }
 
       const sampleRes = sampleStripeCells(
@@ -325,7 +606,6 @@ export class FrameDecoder {
         }
       }
 
-      // If already decoded in this stationary hold window, skip redundant RS decoding
       if (st.decodedInHold && mad < 12 && st.lastResult) {
         stripes[s] = st.lastResult;
         validStripesCount++;
@@ -335,30 +615,26 @@ export class FrameDecoder {
         continue;
       }
 
-      // Convert 1446 symbols into 542 packet bytes
       const symbols1446 = sampleRes.symbols.subarray(0, 1446);
       const packetBytes = symbolsToBytes(symbols1446, PACKET_TOTAL_BYTES);
       const byteMargins = sampleRes.margins
         ? symbolsMarginsToByteMargins(sampleRes.margins.subarray(0, 1446), PACKET_TOTAL_BYTES)
         : null;
 
-      // 1. Single-frame raw decode
       let packetRes = parsePacket(packetBytes, s, byteMargins);
 
-      // 1b. If failed and 1-3 transition tear rows detected, try localized RS row erasures
       if (!packetRes.ok && st.hasPrev && rowMad && tearRowsCount >= 1 && tearRowsCount <= 3 && sampleRes.margins) {
         const tearMargins = new Float32Array(sampleRes.margins);
         for (let i = 0; i < count; i++) {
           const rIdx = dataCells[i].r - rMin;
           if (rowMad[rIdx] > 18) {
-            tearMargins[i] = 0; // Force erasure on tearing row
+            tearMargins[i] = 0;
           }
         }
         const tearByteMargins = symbolsMarginsToByteMargins(tearMargins.subarray(0, 1446), PACKET_TOTAL_BYTES);
         packetRes = parsePacket(packetBytes, s, tearByteMargins);
       }
 
-      // 1c. If failed and rolling-shutter tear split detected, try sub-stripe complementary stitching
       if (!packetRes.ok && st.hasPrev && rowMad && numRows > 4) {
         let splitRow = -1;
         for (let r = 1; r < numRows - 1; r++) {
@@ -393,7 +669,6 @@ export class FrameDecoder {
         }
       }
 
-      // 1d. If failed, try 8-color decision-directed centroid fallback
       if (!packetRes.ok && this.centroids) {
         const centroidRes = this._tryCentroidDecode(s, count, st.curRgb, st.curThresh);
         if (centroidRes.ok) {
@@ -401,7 +676,6 @@ export class FrameDecoder {
         }
       }
 
-      // 2. If failed, try 2-frame pair average fallback
       if (!packetRes.ok && st.hasPrev && mad <= 15) {
         for (let i = 0; i < count; i++) {
           const i3 = i * 3;
@@ -424,7 +698,6 @@ export class FrameDecoder {
         packetRes = parsePacket(pairPkt, s, pairMargins);
       }
 
-      // 3. If still failed, try multi-frame accumulator average
       if (!packetRes.ok && st.count >= 3 && mad <= 15) {
         const inv = 1.0 / st.count;
         for (let i = 0; i < count; i++) {
@@ -473,28 +746,6 @@ export class FrameDecoder {
       }
     }
 
-    if (validStripesCount > 0) {
-      this.missCount = 0;
-    } else {
-      this.missCount = (this.missCount || 0) + 1;
-    }
-
-    if (this.lockCount >= 120) {
-      this.prevCorners = null;
-      this.lockCount = 0;
-    }
-
-    const totalMs = performance.now() - t0;
-
-    return {
-      ok: validStripesCount > 0,
-      corners: globalCorners,
-      stripes,
-      stats: {
-        totalMs,
-        validStripesCount,
-        lockCount: this.lockCount
-      }
-    };
+    return { stripes, validStripesCount };
   }
 }

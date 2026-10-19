@@ -13,10 +13,13 @@ import {
   COLOR_MAGENTA,
   COLOR_CYAN,
   COLOR_FLOOR,
-  SYMBOL_COLORS
+  SYMBOL_COLORS,
+  SYMBOL_COLORS_6BIT,
+  SYMBOL_COLORS_5BIT,
+  PAM4_LEVELS
 } from './constants.js';
-import { getLayout, rotateCoords } from './layout.js';
-import { bytesToSymbols } from '../core/bitpack.js';
+import { getLayout, getLayoutV2, rotateCoords } from './layout.js';
+import { bytesToSymbols, bytesToSymbolsMultiBit } from '../core/bitpack.js';
 import { getFillSymbols } from './scrambler.js';
 
 /**
@@ -51,19 +54,34 @@ export const PILOT_COLORS_U32 = [
   makeRgbaU32(255, 40, 255, 255)  // Magenta
 ];
 
+export const PILOT_COLORS_4PAM_U32 = [
+  makeRgbaU32(40, 40, 40, 255),
+  makeRgbaU32(112, 112, 112, 255),
+  makeRgbaU32(184, 184, 184, 255),
+  makeRgbaU32(255, 255, 255, 255)
+];
+
 export const SYMBOL_COLORS_U32 = new Uint32Array(
   SYMBOL_COLORS.map(c => makeRgbaU32(...c))
+);
+
+export const SYMBOL_COLORS_6BIT_U32 = new Uint32Array(
+  SYMBOL_COLORS_6BIT.map(c => makeRgbaU32(...c))
+);
+
+export const SYMBOL_COLORS_5BIT_U32 = new Uint32Array(
+  SYMBOL_COLORS_5BIT.map(c => makeRgbaU32(...c))
 );
 
 /**
  * Determines 32-bit packed RGBA color for a finder cell (u, v) in logical space.
  */
-function getFinderColorU32(u, v) {
-  const isRight = u >= 72;
-  const isBottom = v >= 72;
+function getFinderColorU32(u, v, gridSize = GRID_SIZE) {
+  const isRight = u >= gridSize - 8;
+  const isBottom = v >= gridSize - 8;
 
-  const lu = isRight ? u - 72 : u;
-  const lv = isBottom ? v - 72 : v;
+  const lu = isRight ? u - (gridSize - 8) : u;
+  const lv = isBottom ? v - (gridSize - 8) : v;
 
   const isSeparator =
     (isRight ? lu === 0 : lu === 7) ||
@@ -95,16 +113,13 @@ const TEMPLATE_CACHE = new Map();
 const CELL_OFFSETS_CACHE = new Map();
 const INITIALIZED_BUFFERS = new WeakMap();
 
-// Zero-allocation scratch buffers for 3-bit packed symbols per stripe
-const SYMBOL_SCRATCH = [
-  new Uint8Array(1466),
-  new Uint8Array(1466),
-  new Uint8Array(1466),
-  new Uint8Array(1466)
-];
+// Zero-allocation scratch buffers for symbols per stripe
+const SYMBOL_SCRATCH = Array.from({ length: 8 }, () => new Uint8Array(2000));
 
-function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
-  const key = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}`;
+function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation, layout = null, is4Pam = false) {
+  const activeLayout = layout || getLayout();
+  const gridSize = activeLayout.gridSize || GRID_SIZE;
+  const key = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}_${gridSize}_${is4Pam}`;
   let template = TEMPLATE_CACHE.get(key);
   if (template) return template;
 
@@ -115,8 +130,6 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
   // Fill entire background with black and alpha = 255 in one native fill
   templateU32.fill(COLOR_BLACK_U32);
 
-  const layout = getLayout();
-
   const paintRectU32 = (x, y, w, h, colorU32) => {
     for (let py = y; py < y + h; py++) {
       const offset = py * imgDim + x;
@@ -125,12 +138,12 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
   };
 
   // 1. Paint Finders (solid cells, no guard gaps)
-  for (let v = 0; v < GRID_SIZE; v++) {
-    for (let u = 0; u < GRID_SIZE; u++) {
-      const idx = v * GRID_SIZE + u;
-      if (layout.cellClass[idx] === 1 /* FINDER */) {
-        const { u: ru, v: rv } = rotateCoords(u, v, rotation);
-        const colorU32 = getFinderColorU32(u, v);
+  for (let v = 0; v < gridSize; v++) {
+    for (let u = 0; u < gridSize; u++) {
+      const idx = v * gridSize + u;
+      if (activeLayout.cellClass[idx] === 1 /* FINDER */) {
+        const { u: ru, v: rv } = rotateCoords(u, v, rotation, gridSize);
+        const colorU32 = getFinderColorU32(u, v, gridSize);
         paintRectU32(ru * cellPx, rv * cellPx, cellPx, cellPx, colorU32);
       }
     }
@@ -140,28 +153,29 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
   const paintTimingEdge = (edgeList) => {
     for (let i = 0; i < edgeList.length; i++) {
       const { r, c, isWhite } = edgeList[i];
-      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
+      const { u: ru, v: rv } = rotateCoords(c, r, rotation, gridSize);
       const colorU32 = isWhite ? COLOR_WHITE_U32 : COLOR_FLOOR_U32;
       paintRectU32(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, colorU32);
     }
   };
-  paintTimingEdge(layout.timingEdges.top);
-  paintTimingEdge(layout.timingEdges.bottom);
-  paintTimingEdge(layout.timingEdges.left);
-  paintTimingEdge(layout.timingEdges.right);
+  paintTimingEdge(activeLayout.timingEdges.top);
+  paintTimingEdge(activeLayout.timingEdges.bottom);
+  paintTimingEdge(activeLayout.timingEdges.left);
+  paintTimingEdge(activeLayout.timingEdges.right);
 
   // 3. Paint Pilot Blocks
-  for (let i = 0; i < layout.pilotBlocks.length; i++) {
-    const { r: rBase, c: cBase } = layout.pilotBlocks[i];
+  const pilotColorTable = is4Pam ? PILOT_COLORS_4PAM_U32 : PILOT_COLORS_U32;
+  for (let i = 0; i < activeLayout.pilotBlocks.length; i++) {
+    const { r: rBase, c: cBase } = activeLayout.pilotBlocks[i];
     const cellDefs = [
-      { r: rBase, c: cBase, colorU32: PILOT_COLORS_U32[0] },
-      { r: rBase, c: cBase + 1, colorU32: PILOT_COLORS_U32[1] },
-      { r: rBase + 1, c: cBase, colorU32: PILOT_COLORS_U32[2] },
-      { r: rBase + 1, c: cBase + 1, colorU32: PILOT_COLORS_U32[3] }
+      { r: rBase, c: cBase, colorU32: pilotColorTable[0] },
+      { r: rBase, c: cBase + 1, colorU32: pilotColorTable[1] },
+      { r: rBase + 1, c: cBase, colorU32: pilotColorTable[2] },
+      { r: rBase + 1, c: cBase + 1, colorU32: pilotColorTable[3] }
     ];
     for (let cd = 0; cd < 4; cd++) {
       const { r, c, colorU32 } = cellDefs[cd];
-      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
+      const { u: ru, v: rv } = rotateCoords(c, r, rotation, gridSize);
       paintRectU32(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, colorU32);
     }
   }
@@ -173,20 +187,22 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
 /**
  * Precomputes and caches 1D pixel start offsets for every data cell.
  */
-function getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation) {
-  const key = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}`;
+function getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation, layout = null) {
+  const activeLayout = layout || getLayout();
+  const gridSize = activeLayout.gridSize || GRID_SIZE;
+  const numStripes = activeLayout.numStripes || 4;
+  const key = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}_${gridSize}_${numStripes}`;
   let offsets = CELL_OFFSETS_CACHE.get(key);
   if (offsets) return offsets;
 
-  const layout = getLayout();
-  offsets = new Array(4);
-  for (let s = 0; s < 4; s++) {
-    const dataCells = layout.stripeDataCells[s];
+  offsets = new Array(numStripes);
+  for (let s = 0; s < numStripes; s++) {
+    const dataCells = activeLayout.stripeDataCells[s];
     const n = dataCells.length;
     const startOffsets = new Int32Array(n);
     for (let i = 0; i < n; i++) {
       const { r, c } = dataCells[i];
-      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
+      const { u: ru, v: rv } = rotateCoords(c, r, rotation, gridSize);
       const x = ru * cellPx + guardPx;
       const y = rv * cellPx + guardPx;
       startOffsets[i] = y * imgDim + x;
@@ -196,6 +212,7 @@ function getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation) {
   CELL_OFFSETS_CACHE.set(key, offsets);
   return offsets;
 }
+
 
 /**
  * Renders a full frame (4 stripe packets) into an RGBA buffer.
@@ -212,6 +229,24 @@ function getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation) {
  */
 export function renderFrame(stripePackets, options = {}) {
   const rotation = options.rotation === 90 ? 90 : 0;
+  const version = options.version ?? (stripePackets.length === 8 ? 2 : 1);
+  const gridSize = options.gridSize ?? (options.layout?.gridSize ?? GRID_SIZE);
+  const numStripes = options.numStripes ?? stripePackets.length;
+  const bitsPerCell = options.bitsPerCell ?? (version === 2 ? 6 : 3);
+  const is4Pam = bitsPerCell >= 5;
+  const colorLutU32 = (bitsPerCell === 6)
+    ? SYMBOL_COLORS_6BIT_U32
+    : (bitsPerCell === 5 ? SYMBOL_COLORS_5BIT_U32 : SYMBOL_COLORS_U32);
+  const fallbackColors = (bitsPerCell === 6)
+    ? SYMBOL_COLORS_6BIT
+    : (bitsPerCell === 5 ? SYMBOL_COLORS_5BIT : SYMBOL_COLORS);
+
+  const layout = options.layout || (
+    (version === 2 || numStripes === 8 || gridSize !== GRID_SIZE)
+      ? getLayoutV2({ gridSize, numStripes })
+      : getLayout()
+  );
+
   let corePx, guardPx, cellPx;
   if (options.corePx !== undefined && options.corePx !== null) {
     corePx = Math.max(1, options.corePx | 0);
@@ -227,15 +262,15 @@ export function renderFrame(stripePackets, options = {}) {
     corePx = CORE_BASE_PX * scale;
     cellPx = corePx + 2 * guardPx;
   }
-  const imgDim = GRID_SIZE * cellPx;
+  const imgDim = layout.gridSize * cellPx;
   const totalBytes = imgDim * imgDim * 4;
-  const templateKey = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}`;
+  const templateKey = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}_${layout.gridSize}_${is4Pam}`;
 
   const rgba = (options.outRgba && options.outRgba.length === totalBytes)
     ? options.outRgba
     : new Uint8ClampedArray(totalBytes);
 
-  const staticTemplate = getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation);
+  const staticTemplate = getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation, layout, is4Pam);
 
   // If the provided buffer has already been initialized with this static template,
   // skip copying template to save ~2.5 MB of memory operations per frame.
@@ -244,8 +279,7 @@ export function renderFrame(stripePackets, options = {}) {
     INITIALIZED_BUFFERS.set(rgba, templateKey);
   }
 
-  const layout = getLayout();
-  const stripeOffsets = getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation);
+  const stripeOffsets = getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation, layout);
 
   // View buffer as Uint32Array for ultra-fast word stores
   const rgbaU32 = (rgba.byteOffset % 4 === 0)
@@ -253,18 +287,25 @@ export function renderFrame(stripePackets, options = {}) {
     : null;
 
   // 4. Paint Data Stripes
-  for (let s = 0; s < 4; s++) {
+  for (let s = 0; s < layout.numStripes; s++) {
     const packet = stripePackets[s];
+    if (!packet) continue;
     const dataCells = layout.stripeDataCells[s];
     const n = dataCells.length;
 
-    const scratch = SYMBOL_SCRATCH[s];
-    bytesToSymbols(packet, 1446, scratch);
+    let scratch = SYMBOL_SCRATCH[s];
+    if (!scratch || scratch.length < n) {
+      scratch = new Uint8Array(n);
+      SYMBOL_SCRATCH[s] = scratch;
+    }
 
-    if (n > 1446) {
+    if (bitsPerCell === 3 && n > 1446 && stripePackets.length === 4) {
+      bytesToSymbols(packet, 1446, scratch);
       const fillCount = n - 1446;
       const fill = getFillSymbols(s, fillCount);
       scratch.set(fill, 1446);
+    } else {
+      bytesToSymbolsMultiBit(packet, bitsPerCell, n, scratch);
     }
 
     const startOffsets = stripeOffsets[s];
@@ -273,11 +314,11 @@ export function renderFrame(stripePackets, options = {}) {
       // Fast path: 32-bit packed word stores
       if (corePx === 1) {
         for (let i = 0; i < n; i++) {
-          rgbaU32[startOffsets[i]] = SYMBOL_COLORS_U32[scratch[i]];
+          rgbaU32[startOffsets[i]] = colorLutU32[scratch[i]];
         }
       } else if (corePx === 2) {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           const off = startOffsets[i];
           rgbaU32[off] = cU32;
           rgbaU32[off + 1] = cU32;
@@ -287,7 +328,7 @@ export function renderFrame(stripePackets, options = {}) {
         }
       } else if (corePx === 3) {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           let off = startOffsets[i];
           rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32;
           off += imgDim;
@@ -297,7 +338,7 @@ export function renderFrame(stripePackets, options = {}) {
         }
       } else if (corePx === 4) {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           let off = startOffsets[i];
           for (let dy = 0; dy < 4; dy++) {
             rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32;
@@ -306,7 +347,7 @@ export function renderFrame(stripePackets, options = {}) {
         }
       } else if (corePx === 5) {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           let off = startOffsets[i];
           for (let dy = 0; dy < 5; dy++) {
             rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32; rgbaU32[off + 4] = cU32;
@@ -315,7 +356,7 @@ export function renderFrame(stripePackets, options = {}) {
         }
       } else if (corePx === 6) {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           let off = startOffsets[i];
           for (let dy = 0; dy < 6; dy++) {
             rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32; rgbaU32[off + 4] = cU32; rgbaU32[off + 5] = cU32;
@@ -324,7 +365,7 @@ export function renderFrame(stripePackets, options = {}) {
         }
       } else if (corePx === 7) {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           let off = startOffsets[i];
           for (let dy = 0; dy < 7; dy++) {
             rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32; rgbaU32[off + 4] = cU32; rgbaU32[off + 5] = cU32; rgbaU32[off + 6] = cU32;
@@ -333,7 +374,7 @@ export function renderFrame(stripePackets, options = {}) {
         }
       } else if (corePx === 8) {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           let off = startOffsets[i];
           for (let dy = 0; dy < 8; dy++) {
             rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32;
@@ -343,7 +384,7 @@ export function renderFrame(stripePackets, options = {}) {
         }
       } else {
         for (let i = 0; i < n; i++) {
-          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const cU32 = colorLutU32[scratch[i]];
           let off = startOffsets[i];
           for (let dy = 0; dy < corePx; dy++) {
             for (let dx = 0; dx < corePx; dx++) {
@@ -356,7 +397,7 @@ export function renderFrame(stripePackets, options = {}) {
     } else {
       // Fallback path for unaligned Uint8ClampedArray
       for (let i = 0; i < n; i++) {
-        const [r, g, b, a] = SYMBOL_COLORS[scratch[i]];
+        const [r, g, b, a] = fallbackColors[scratch[i]];
         let off = startOffsets[i] * 4;
         for (let dy = 0; dy < corePx; dy++) {
           let lineOff = off;

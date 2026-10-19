@@ -17,6 +17,7 @@ export class FountainDecoder {
     this.receivedCount = 0;
     this.seenSeeds = new Set();
     this.waitingList = []; // Array<{ indices: number[], payload: Uint32Array }>
+    this.words = null;
   }
 
   /**
@@ -47,12 +48,17 @@ export class FountainDecoder {
    * Ingests one verified droplet.
    *
    * @param {number} seed - Droplet seed
-   * @param {Uint32Array} payloadU32 - 112-word droplet payload
+   * @param {Uint32Array} payloadU32 - Droplet payload
    * @returns {boolean} true if droplet provided new information
    */
   addDroplet(seed, payloadU32) {
     if (this.isComplete()) return false;
     if (this.seenSeeds.has(seed)) return false;
+
+    if (this.words === null && payloadU32) {
+      this.words = payloadU32.length;
+    }
+    const words = this.words || 112;
 
     this.seenSeeds.add(seed);
     this.receivedCount++;
@@ -66,7 +72,7 @@ export class FountainDecoder {
       const idx = rawIndices[i];
       if (this.isSolved[idx]) {
         const solvedBlock = this.solved[idx];
-        for (let w = 0; w < 112; w++) {
+        for (let w = 0; w < words; w++) {
           payload[w] ^= solvedBlock[w];
         }
       } else {
@@ -126,7 +132,8 @@ export class FountainDecoder {
           const idx = eq.indices[j];
           if (this.isSolved[idx]) {
             const block = this.solved[idx];
-            for (let w = 0; w < 112; w++) {
+            const words = this.words || 112;
+            for (let w = 0; w < words; w++) {
               eq.payload[w] ^= block[w];
             }
           } else {
@@ -191,7 +198,8 @@ export class FountainDecoder {
             rhsCopied = true;
           }
           const solvedBlock = this.solved[idx];
-          for (let w = 0; w < 112; w++) {
+          const words = this.words || 112;
+          for (let w = 0; w < words; w++) {
             rhs[w] ^= solvedBlock[w];
           }
         } else {
@@ -264,11 +272,13 @@ export class FountainDecoder {
       throw new Error(`Cannot get bytes: only ${this.solvedCount}/${this.K} blocks solved`);
     }
 
-    const out = new Uint8Array(this.K * 448);
+    const words = this.words || 112;
+    const bytesPerBlock = words * 4;
+    const out = new Uint8Array(this.K * bytesPerBlock);
     for (let i = 0; i < this.K; i++) {
       const u32 = this.solved[i];
-      const u8 = new Uint8Array(u32.buffer, u32.byteOffset, 448);
-      out.set(u8, i * 448);
+      const u8 = new Uint8Array(u32.buffer, u32.byteOffset, bytesPerBlock);
+      out.set(u8, i * bytesPerBlock);
     }
     return out;
   }

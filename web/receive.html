@@ -50,12 +50,36 @@
       </div>
 
       <div class="panel">
+        <div class="panel-title">Protocol &amp; Grid</div>
+        <div class="field">
+          <label for="rxVersionSelect">Protocol Mode</label>
+          <select id="rxVersionSelect">
+            <option value="auto" selected>Auto-Detect (v1 / v2 Turbo)</option>
+            <option value="2">v2 Turbo (6-bit 4-PAM, 8 Micro-Stripes)</option>
+            <option value="1">v1 Standard (3-bit RGB, 4 Stripes)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="rxGridSelect">Grid Density</label>
+          <select id="rxGridSelect">
+            <option value="80" selected>80×80 (Standard)</option>
+            <option value="96">96×96 (High Density)</option>
+            <option value="112">112×112 (Ultra Density)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-title">Stripe Status</div>
-        <div class="stripe-indicators">
+        <div class="stripe-indicators" id="stripeIndicators">
           <div id="stripe0" class="stripe-bar" title="Stripe 0"></div>
           <div id="stripe1" class="stripe-bar" title="Stripe 1"></div>
           <div id="stripe2" class="stripe-bar" title="Stripe 2"></div>
           <div id="stripe3" class="stripe-bar" title="Stripe 3"></div>
+          <div id="stripe4" class="stripe-bar" title="Stripe 4"></div>
+          <div id="stripe5" class="stripe-bar" title="Stripe 5"></div>
+          <div id="stripe6" class="stripe-bar" title="Stripe 6"></div>
+          <div id="stripe7" class="stripe-bar" title="Stripe 7"></div>
         </div>
       </div>
 

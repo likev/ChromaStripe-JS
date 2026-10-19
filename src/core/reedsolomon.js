@@ -502,6 +502,9 @@ export function rsDecode(codeword, nsym, inPlace = false, erasures = []) {
  */
 export function fastDecodeCodeword(cw, nsym, margins = null) {
   const n = cw.length;
+  if (n > 255 || n <= nsym) {
+    return { ok: false, corrected: 0, codeword: cw };
+  }
   const syndromes = rsSyndromes(cw, nsym);
 
   // 1. Zero syndromes => perfect codeword

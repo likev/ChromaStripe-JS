@@ -19,6 +19,7 @@ let rotation = 0;
 let startTime = 0;
 let totalFramesSent = 0;
 let selectedSize = 'auto'; // 'auto' or integer string e.g. '5', '6', '7', '8'
+let currentFile = null;
 
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
@@ -30,6 +31,12 @@ const rotateBtn = document.getElementById('rotateBtn');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const speedSelect = document.getElementById('speedSelect');
 const sizeSelect = document.getElementById('sizeSelect');
+const versionSelect = document.getElementById('versionSelect');
+const gridSelect = document.getElementById('gridSelect');
+const rateModeSelect = document.getElementById('rateModeSelect');
+const rateModeField = document.getElementById('rateModeField');
+const modSelect = document.getElementById('modSelect');
+const modField = document.getElementById('modField');
 const canvas = document.getElementById('txCanvas');
 const hud = document.getElementById('hud');
 
@@ -37,8 +44,9 @@ const hud = document.getElementById('hud');
  * Updates TX dimensions on session, canvas, renderer, and size selector labels.
  */
 function updateTxDimensions() {
-  const autoCorePx = computeAutoCorePx({ guardPx: 1 });
-  const autoDims = getDimensionsForCorePx(autoCorePx, 1);
+  const gridSize = gridSelect ? parseInt(gridSelect.value, 10) : 80;
+  const autoCorePx = computeAutoCorePx({ guardPx: 1, gridSize });
+  const autoDims = getDimensionsForCorePx(autoCorePx, 1, gridSize);
 
   // Update Auto option label to ALWAYS show the auto-detected resolution
   if (sizeSelect) {
@@ -49,11 +57,12 @@ function updateTxDimensions() {
   }
 
   const corePx = selectedSize !== 'auto' ? parseInt(selectedSize, 10) : autoCorePx;
-  const { guardPx, cellPx, dim } = getDimensionsForCorePx(corePx, 1);
+  const { guardPx, cellPx, dim } = getDimensionsForCorePx(corePx, 1, gridSize);
 
   if (session) {
     session.corePx = corePx;
     session.guardPx = guardPx;
+    session.gridSize = gridSize;
   }
 
   if (renderer) {
@@ -69,6 +78,7 @@ function updateTxDimensions() {
 // File Selection Handler
 async function handleFile(file) {
   if (!file) return;
+  currentFile = file;
 
   // If a transmission was previously running, stop it cleanly
   if (isRunning) {
@@ -88,13 +98,22 @@ async function handleFile(file) {
 
   const { corePx, guardPx } = updateTxDimensions();
 
+  const version = versionSelect ? parseInt(versionSelect.value, 10) : 2;
+  const gridSize = gridSelect ? parseInt(gridSelect.value, 10) : 80;
+  const rateMode = rateModeSelect ? parseInt(rateModeSelect.value, 10) : 1;
+  const bitsPerCell = modSelect ? parseInt(modSelect.value, 10) : (version === 2 ? 6 : 3);
+
   session = new TxSession(bytes, {
     fileName: file.name,
     mimeType: file.type || 'application/octet-stream',
     scale: 1,
     rotation,
     corePx,
-    guardPx
+    guardPx,
+    version,
+    gridSize,
+    rateMode,
+    bitsPerCell
   });
 
   document.getElementById('fileName').textContent = file.name;
@@ -105,11 +124,41 @@ async function handleFile(file) {
   await session.init();
 
   document.getElementById('blockCount').textContent = session.K;
-  const estSec = Math.ceil(session.K / (60 / txHold / 4));
+  const numStripes = session.numStripes || 4;
+  const dropletsPerSec = (60 / txHold) * numStripes;
+  const estSec = Math.ceil(session.K / dropletsPerSec);
   document.getElementById('estTime').textContent = formatTime(estSec);
 
   startBtn.disabled = false;
   updateTxDimensions();
+}
+
+if (versionSelect) {
+  versionSelect.addEventListener('change', () => {
+    const isV2 = versionSelect.value === '2';
+    if (rateModeField) rateModeField.style.display = isV2 ? 'block' : 'none';
+    if (modField) modField.style.display = isV2 ? 'block' : 'none';
+    if (currentFile) handleFile(currentFile);
+  });
+}
+
+if (gridSelect) {
+  gridSelect.addEventListener('change', () => {
+    updateTxDimensions();
+    if (currentFile) handleFile(currentFile);
+  });
+}
+
+if (rateModeSelect) {
+  rateModeSelect.addEventListener('change', () => {
+    if (currentFile) handleFile(currentFile);
+  });
+}
+
+if (modSelect) {
+  modSelect.addEventListener('change', () => {
+    if (currentFile) handleFile(currentFile);
+  });
 }
 
 // Drag & drop listeners
@@ -147,6 +196,13 @@ if (sizeSelect) {
 // Speed setting
 speedSelect.addEventListener('change', () => {
   txHold = parseInt(speedSelect.value, 10);
+  if (session && session.K) {
+    const numStripes = session.numStripes || 4;
+    const dropletsPerSec = (60 / txHold) * numStripes;
+    const estSec = Math.ceil(session.K / dropletsPerSec);
+    const estTimeEl = document.getElementById('estTime');
+    if (estTimeEl) estTimeEl.textContent = formatTime(estSec);
+  }
 });
 
 // Rotation toggle

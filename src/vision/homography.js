@@ -10,14 +10,15 @@
  * @param {Array<{x: number, y: number}>} corners - [TL, TR, BL, BR] in camera pixels
  * @returns {Float64Array | null} 8 parameters [h00, h01, h02, h10, h11, h12, h20, h21]
  */
-export function solveHomography(corners) {
+export function solveHomography(corners, gridSize = 80) {
   if (!corners || corners.length !== 4) return null;
 
+  const cMax = gridSize - 3.5;
   const src = [
     [3.5, 3.5],   // TL
-    [76.5, 3.5],  // TR
-    [3.5, 76.5],  // BL
-    [76.5, 76.5]  // BR
+    [cMax, 3.5],  // TR
+    [3.5, cMax],  // BL
+    [cMax, cMax]  // BR
   ];
 
   // 8x8 linear system: A * h = b

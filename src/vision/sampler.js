@@ -77,22 +77,132 @@ export function sliceCellCentroid(rVal, gVal, bVal, centroids) {
 }
 
 /**
- * Samples all 80x80 cell centers across the grid.
+ * 4-PAM 6-Bit Gray-coded Constellation Slicer ([4x4x4] = 6 bits/cell).
+ *
+ * @param {number} rVal
+ * @param {number} gVal
+ * @param {number} bVal
+ * @param {Float32Array|number[]} thresh4Pam - 9 thresholds [Tr01, Tr12, Tr23, Tg01, Tg12, Tg23, Tb01, Tb12, Tb23]
+ * @returns {{ sym: number, margin: number }}
+ */
+export function sliceCell4Pam(rVal, gVal, bVal, thresh4Pam) {
+  // R channel: 2 Gray-coded bits
+  let bR = 0, mR = 0;
+  if (rVal < thresh4Pam[0]) {
+    bR = 0;
+    mR = thresh4Pam[0] - rVal;
+  } else if (rVal < thresh4Pam[1]) {
+    bR = 1;
+    mR = Math.min(rVal - thresh4Pam[0], thresh4Pam[1] - rVal);
+  } else if (rVal < thresh4Pam[2]) {
+    bR = 3;
+    mR = Math.min(rVal - thresh4Pam[1], thresh4Pam[2] - rVal);
+  } else {
+    bR = 2;
+    mR = rVal - thresh4Pam[2];
+  }
+
+  // G channel: 2 Gray-coded bits
+  let bG = 0, mG = 0;
+  if (gVal < thresh4Pam[3]) {
+    bG = 0;
+    mG = thresh4Pam[3] - gVal;
+  } else if (gVal < thresh4Pam[4]) {
+    bG = 1;
+    mG = Math.min(gVal - thresh4Pam[3], thresh4Pam[4] - gVal);
+  } else if (gVal < thresh4Pam[5]) {
+    bG = 3;
+    mG = Math.min(gVal - thresh4Pam[4], thresh4Pam[5] - gVal);
+  } else {
+    bG = 2;
+    mG = gVal - thresh4Pam[5];
+  }
+
+  // B channel: 2 Gray-coded bits
+  let bB = 0, mB = 0;
+  if (bVal < thresh4Pam[6]) {
+    bB = 0;
+    mB = thresh4Pam[6] - bVal;
+  } else if (bVal < thresh4Pam[7]) {
+    bB = 1;
+    mB = Math.min(bVal - thresh4Pam[6], thresh4Pam[7] - bVal);
+  } else if (bVal < thresh4Pam[8]) {
+    bB = 3;
+    mB = Math.min(bVal - thresh4Pam[7], thresh4Pam[8] - bVal);
+  } else {
+    bB = 2;
+    mB = bVal - thresh4Pam[8];
+  }
+
+  return {
+    sym: (bR << 4) | (bG << 2) | bB,
+    margin: Math.min(mR, mG, mB)
+  };
+}
+
+/**
+ * 4-PAM 5-Bit Constellation Slicer ([4x4x2] = 5 bits/cell).
+ */
+export function sliceCell5Pam(rVal, gVal, bVal, thresh4Pam, Tb = 128) {
+  let bR = 0, mR = 0;
+  if (rVal < thresh4Pam[0]) {
+    bR = 0;
+    mR = thresh4Pam[0] - rVal;
+  } else if (rVal < thresh4Pam[1]) {
+    bR = 1;
+    mR = Math.min(rVal - thresh4Pam[0], thresh4Pam[1] - rVal);
+  } else if (rVal < thresh4Pam[2]) {
+    bR = 3;
+    mR = Math.min(rVal - thresh4Pam[1], thresh4Pam[2] - rVal);
+  } else {
+    bR = 2;
+    mR = rVal - thresh4Pam[2];
+  }
+
+  let bG = 0, mG = 0;
+  if (gVal < thresh4Pam[3]) {
+    bG = 0;
+    mG = thresh4Pam[3] - gVal;
+  } else if (gVal < thresh4Pam[4]) {
+    bG = 1;
+    mG = Math.min(gVal - thresh4Pam[3], thresh4Pam[4] - gVal);
+  } else if (gVal < thresh4Pam[5]) {
+    bG = 3;
+    mG = Math.min(gVal - thresh4Pam[4], thresh4Pam[5] - gVal);
+  } else {
+    bG = 2;
+    mG = gVal - thresh4Pam[5];
+  }
+
+  const bB = bVal >= Tb ? 1 : 0;
+  const mB = Math.abs(bVal - Tb);
+
+  return {
+    sym: (bR << 3) | (bG << 1) | bB,
+    margin: Math.min(mR, mG, mB)
+  };
+}
+
+/**
+ * Samples all cells across the grid.
  *
  * @param {Uint8ClampedArray|Uint8Array} rgba - Camera frame buffer
  * @param {number} width - Camera width
  * @param {number} height - Camera height
  * @param {Float64Array} H - Homography matrix
  * @param {TimingRefiner} timingRefiner - Timing offset provider
- * @param {Float32Array} [outGridRgb] - Preallocated 80x80x3 buffer
+ * @param {Float32Array} [outGridRgb] - Preallocated buffer
+ * @param {Uint8Array} [outInBounds]
+ * @param {number} [gridSize=80] - Grid dimension
  * @returns {{ ok: boolean, gridRgb: Float32Array }}
  */
-export function sampleFullGrid(rgba, width, height, H, timingRefiner, outGridRgb, outInBounds = null) {
-  const gridRgb = outGridRgb || new Float32Array(6400 * 3);
+export function sampleFullGrid(rgba, width, height, H, timingRefiner, outGridRgb, outInBounds = null, gridSize = 80) {
+  const G = gridSize || 80;
+  const gridRgb = outGridRgb || new Float32Array(G * G * 3);
   let allInBounds = true;
 
-  for (let r = 0; r < 80; r++) {
-    for (let c = 0; c < 80; c++) {
+  for (let r = 0; r < G; r++) {
+    for (let c = 0; c < G; c++) {
       let du = 0, dv = 0;
       if (timingRefiner) {
         const off = timingRefiner.getOffset(c, r);
@@ -105,7 +215,7 @@ export function sampleFullGrid(rgba, width, height, H, timingRefiner, outGridRgb
       const { x, y } = projectH(H, uRef, vRef);
       const x0 = Math.floor(x);
       const y0 = Math.floor(y);
-      const cellIdx = r * 80 + c;
+      const cellIdx = r * G + c;
       const idx3 = cellIdx * 3;
 
       if (x0 < 0 || x0 >= width - 1 || y0 < 0 || y0 >= height - 1) {
@@ -246,15 +356,18 @@ export function sampleStripeCells(
   outRgb,
   outThresh,
   precomputedGrid = null,
-  inBounds = null
+  inBounds = null,
+  options = {}
 ) {
+  const G = options.gridSize || pilotCalibrator?.gridSize || 80;
+  const bitsPerCell = options.bitsPerCell || 3;
   const count = stripeDataCells.length;
   const symbols = outSymbols || new Uint8Array(count);
   const margins = outMargins || new Float32Array(count);
 
   let gridRgb = precomputedGrid;
   if (!gridRgb) {
-    const gridRes = sampleFullGrid(rgba, width, height, H, timingRefiner);
+    const gridRes = sampleFullGrid(rgba, width, height, H, timingRefiner, null, null, G);
     if (!gridRes.ok) {
       // Check if stripe cells specifically are out of bounds
       for (let i = 0; i < count; i++) {
@@ -272,37 +385,69 @@ export function sampleStripeCells(
   } else if (inBounds) {
     for (let i = 0; i < count; i++) {
       const { r, c } = stripeDataCells[i];
-      if (inBounds[r * 80 + c] === 0) {
+      if (inBounds[r * G + c] === 0) {
         return { ok: false, symbols, margins };
       }
     }
   }
 
   const beta = 0.045;
+  const rowStride = G * 3;
 
   for (let i = 0; i < count; i++) {
     const { r, c } = stripeDataCells[i];
-    const cIdx = (r * 80 + c) * 3;
+    const cIdx = (r * G + c) * 3;
 
     let rVal = gridRgb[cIdx];
     let gVal = gridRgb[cIdx + 1];
     let bVal = gridRgb[cIdx + 2];
 
     let nR = 0, nG = 0, nB = 0, cnt = 0;
-    if (r > 0)    { const k = cIdx - 240; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
-    if (r < 79)   { const k = cIdx + 240; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
-    if (c > 0)    { const k = cIdx - 3;   nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
-    if (c < 79)   { const k = cIdx + 3;   nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+    if (r > 0)     { const k = cIdx - rowStride; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+    if (r < G - 1) { const k = cIdx + rowStride; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+    if (c > 0)     { const k = cIdx - 3;         nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+    if (c < G - 1) { const k = cIdx + 3;         nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
 
     rVal -= beta * (nR - cnt * rVal);
     gVal -= beta * (nG - cnt * gVal);
     bVal -= beta * (nB - cnt * bVal);
 
-    // Local pilot thresholds and scales
-    const { Tr, Tg, Tb } = pilotCalibrator.getThresholds(c, r);
-    const { scaleR, scaleG, scaleB } = pilotCalibrator.getScales
-      ? pilotCalibrator.getScales(c, r)
-      : { scaleR: 1.0, scaleG: 1.0, scaleB: 1.0 };
+    let res;
+    if (bitsPerCell === 6 && pilotCalibrator?.getThresholds4Pam) {
+      const t4 = pilotCalibrator.getThresholds4Pam(c, r);
+      res = sliceCell4Pam(rVal, gVal, bVal, t4);
+      if (outThresh) {
+        const idx3 = i * 3;
+        outThresh[idx3] = t4[1];
+        outThresh[idx3 + 1] = t4[4];
+        outThresh[idx3 + 2] = t4[7];
+      }
+    } else if (bitsPerCell === 5 && pilotCalibrator?.getThresholds4Pam) {
+      const t4 = pilotCalibrator.getThresholds4Pam(c, r);
+      const { Tb } = pilotCalibrator.getThresholds(c, r);
+      res = sliceCell5Pam(rVal, gVal, bVal, t4, Tb);
+      if (outThresh) {
+        const idx3 = i * 3;
+        outThresh[idx3] = t4[1];
+        outThresh[idx3 + 1] = t4[4];
+        outThresh[idx3 + 2] = Tb;
+      }
+    } else {
+      // Local pilot thresholds and scales
+      const { Tr, Tg, Tb } = pilotCalibrator.getThresholds(c, r);
+      const { scaleR, scaleG, scaleB } = pilotCalibrator.getScales
+        ? pilotCalibrator.getScales(c, r)
+        : { scaleR: 1.0, scaleG: 1.0, scaleB: 1.0 };
+
+      if (outThresh) {
+        const idx3 = i * 3;
+        outThresh[idx3] = Tr;
+        outThresh[idx3 + 1] = Tg;
+        outThresh[idx3 + 2] = Tb;
+      }
+
+      res = sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb, scaleR, scaleG, scaleB);
+    }
 
     if (outRgb) {
       const idx3 = i * 3;
@@ -310,17 +455,11 @@ export function sampleStripeCells(
       outRgb[idx3 + 1] = gVal;
       outRgb[idx3 + 2] = bVal;
     }
-    if (outThresh) {
-      const idx3 = i * 3;
-      outThresh[idx3] = Tr;
-      outThresh[idx3 + 1] = Tg;
-      outThresh[idx3 + 2] = Tb;
-    }
 
-    const res = sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb, scaleR, scaleG, scaleB);
     symbols[i] = res.sym;
     margins[i] = res.margin;
   }
 
   return { ok: true, symbols, margins };
 }
+

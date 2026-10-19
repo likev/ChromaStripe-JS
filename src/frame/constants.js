@@ -57,3 +57,71 @@ export const SYMBOL_COLORS = [
 // Protocol version
 export const PROTOCOL_VERSION = 1;
 export const MAGIC_MANIFEST = 'CSv1';
+
+// Protocol Version 2 (Evolution)
+export const PROTOCOL_VERSION_V2 = 2;
+export const MAGIC_MANIFEST_V2 = 'CSv2';
+
+export const SUPPORTED_GRID_SIZES = [80, 96, 112];
+export const MODULATION_MODES = {
+  RGB_3BIT: 3,
+  PAM_5BIT: 5,
+  PAM_6BIT: 6
+};
+
+export const RS_RATE_MODES = {
+  STANDARD: 0,
+  HIGH_RATE: 1
+};
+
+export const V2_NUM_STRIPES = 8;
+export const V2_PAYLOAD_WORDS = 56;
+export const V2_PAYLOAD_BYTES = 224; // 56 * 4
+
+// V2 Single-Codeword RS (N <= 255)
+// Data = 12 (header) + 224 (payload) = 236 bytes
+export const V2_RS_PARITY_HIGH_RATE = 14; // t = 7, total packet = 250 bytes
+export const V2_RS_PARITY_STANDARD = 18;  // t = 9, total packet = 254 bytes
+export const V2_PACKET_BYTES_HIGH_RATE = 250;
+export const V2_PACKET_BYTES_STANDARD = 254;
+
+// V2 Turbo High-Throughput (N <= 255 per codeword, 2 interleaved codewords)
+// Data = 12 (header) + 448 (payload) = 460 bytes (2x 230 bytes)
+export const V2_TURBO_PAYLOAD_WORDS = 112;
+export const V2_TURBO_PAYLOAD_BYTES = 448;
+export const V2_TURBO_PACKET_BYTES_HIGH_RATE = 488;
+export const V2_TURBO_PACKET_BYTES_STANDARD = 496;
+
+// 4-PAM Gray-coded levels & thresholds:
+// Gray mapping: 00 -> 40, 01 -> 112, 11 -> 184, 10 -> 255
+export const PAM4_LEVELS = [40, 112, 184, 255];
+export const PAM4_GRAY_TO_LEVEL = [0, 1, 3, 2];
+export const PAM4_LEVEL_TO_GRAY = [0, 1, 3, 2];
+export const PAM4_THRESHOLDS = [76, 148, 220]; // (40+112)/2, (112+184)/2, (184+255)/2
+
+// 64-state [4x4x4] 6-bit constellation (R: 4-PAM, G: 4-PAM, B: 4-PAM)
+export const SYMBOL_COLORS_6BIT = Array.from({ length: 64 }, (_, s) => {
+  const bR = (s >>> 4) & 3;
+  const bG = (s >>> 2) & 3;
+  const bB = s & 3;
+  return [
+    PAM4_LEVELS[PAM4_GRAY_TO_LEVEL[bR]],
+    PAM4_LEVELS[PAM4_GRAY_TO_LEVEL[bG]],
+    PAM4_LEVELS[PAM4_GRAY_TO_LEVEL[bB]],
+    255
+  ];
+});
+
+// 32-state [4x4x2] 5-bit constellation (R: 4-PAM, G: 4-PAM, B: 2-PAM)
+export const SYMBOL_COLORS_5BIT = Array.from({ length: 32 }, (_, s) => {
+  const bR = (s >>> 3) & 3;
+  const bG = (s >>> 1) & 3;
+  const bB = s & 1;
+  return [
+    PAM4_LEVELS[PAM4_GRAY_TO_LEVEL[bR]],
+    PAM4_LEVELS[PAM4_GRAY_TO_LEVEL[bG]],
+    bB ? 255 : 40,
+    255
+  ];
+});
+

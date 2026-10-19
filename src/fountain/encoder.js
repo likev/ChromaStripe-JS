@@ -14,14 +14,15 @@ import { getDropletIndices } from './schedule.js';
  */
 export function encodeDroplet(seed, sourceBlocks, outU32) {
   const K = sourceBlocks.length;
+  const words = sourceBlocks[0]?.length || 112;
   const indices = getDropletIndices(seed, K);
-  const out = outU32 || new Uint32Array(112);
+  const out = outU32 || new Uint32Array(words);
   out.fill(0);
 
   const numIndices = indices.length;
   for (let i = 0; i < numIndices; i++) {
     const block = sourceBlocks[indices[i]];
-    for (let w = 0; w < 112; w++) {
+    for (let w = 0; w < words; w++) {
       out[w] ^= block[w];
     }
   }

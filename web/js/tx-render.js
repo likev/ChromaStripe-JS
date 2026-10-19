@@ -107,23 +107,25 @@ export function computeAutoCorePx(options = {}) {
   }
 
   const maxDim = Math.min(availW, availH);
-  const maxCellPx = Math.floor(maxDim / 80);
+  const gridSize = options.gridSize || 80;
+  const maxCellPx = Math.floor(maxDim / gridSize);
   const corePx = maxCellPx - 2 * guardPx;
 
   return Math.max(minCore, Math.min(maxCore, corePx));
 }
 
 /**
- * Calculates cellPx and total image dimension for a given corePx and guardPx.
+ * Calculates cellPx and total image dimension for a given corePx, guardPx, and gridSize.
  *
  * @param {number} corePx
  * @param {number} [guardPx=1]
- * @returns {{ corePx: number, guardPx: number, cellPx: number, dim: number }}
+ * @param {number} [gridSize=80]
+ * @returns {{ corePx: number, guardPx: number, cellPx: number, dim: number, gridSize: number }}
  */
-export function getDimensionsForCorePx(corePx, guardPx = 1) {
+export function getDimensionsForCorePx(corePx, guardPx = 1, gridSize = 80) {
   const cellPx = corePx + 2 * guardPx;
-  const dim = 80 * cellPx;
-  return { corePx, guardPx, cellPx, dim };
+  const dim = gridSize * cellPx;
+  return { corePx, guardPx, cellPx, dim, gridSize };
 }
 
 export class TxCanvasRenderer {

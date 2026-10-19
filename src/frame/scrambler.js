@@ -12,7 +12,7 @@ import { PROTOCOL_VERSION, PACKET_TOTAL_BYTES } from './constants.js';
  * @returns {number}
  */
 export function getScramblerSeed(stripeIdx, ver = PROTOCOL_VERSION) {
-  return ((0xC5A00000 | ((ver & 0xFF) << 8) | (stripeIdx & 0x03)) >>> 0);
+  return ((0xC5A00000 | ((ver & 0xFF) << 8) | (stripeIdx & 0x0F)) >>> 0);
 }
 
 /**

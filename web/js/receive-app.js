@@ -31,11 +31,17 @@ const startBtn = document.getElementById('startCameraBtn');
 const cameraArea = document.getElementById('cameraArea');
 const progressPanel = document.getElementById('progressPanel');
 const resultCard = document.getElementById('resultCard');
+const rxVersionSelect = document.getElementById('rxVersionSelect');
+const rxGridSelect = document.getElementById('rxGridSelect');
 const stripeBars = [
   document.getElementById('stripe0'),
   document.getElementById('stripe1'),
   document.getElementById('stripe2'),
-  document.getElementById('stripe3')
+  document.getElementById('stripe3'),
+  document.getElementById('stripe4'),
+  document.getElementById('stripe5'),
+  document.getElementById('stripe6'),
+  document.getElementById('stripe7')
 ];
 
 // Initialize multi-worker RX pool (2–3 Web Workers) to eliminate workerBusy frame drops
@@ -110,7 +116,8 @@ async function handleWorkerMessage(workerObj, e) {
         rxStartTime = performance.now();
       }
       const elapsed = (performance.now() - rxStartTime) / 1000.0;
-      const kb = (distinct * 448) / 1024.0;
+      const bytesPerBlock = rxSession.fountainDecoder?.bytesPerBlock || 448;
+      const kb = (distinct * bytesPerBlock) / 1024.0;
       document.getElementById('rxSpeed').textContent = `${(kb / Math.max(0.1, elapsed)).toFixed(1)} KB/s`;
     }
   }
@@ -141,11 +148,18 @@ async function handleWorkerMessage(workerObj, e) {
   }
 
   // Update stripe status indicators
-  for (let s = 0; s < 4; s++) {
-    if (stripes && stripes[s]?.ok) {
-      stripeBars[s].className = 'stripe-bar active';
+  const numStripes = stripes ? stripes.length : 4;
+  for (let s = 0; s < stripeBars.length; s++) {
+    if (!stripeBars[s]) continue;
+    if (s < numStripes) {
+      stripeBars[s].style.display = 'block';
+      if (stripes && stripes[s]?.ok) {
+        stripeBars[s].className = 'stripe-bar active';
+      } else {
+        stripeBars[s].className = 'stripe-bar error';
+      }
     } else {
-      stripeBars[s].className = 'stripe-bar error';
+      stripeBars[s].style.display = 'none';
     }
   }
 }
@@ -437,6 +451,8 @@ function captureLoop() {
               workerObj.busy = false;
               return;
             }
+            const rxVer = rxVersionSelect?.value === '1' ? 1 : (rxVersionSelect?.value === '2' ? 2 : 'auto');
+            const rxGrid = parseInt(rxGridSelect?.value || '80', 10);
             workerObj.worker.postMessage(
               {
                 type: 'decode_frame',
@@ -448,7 +464,9 @@ function captureLoop() {
                 frameId,
                 workerId: workerObj.id,
                 poolMode: true,
-                sessionId: currentSessionId
+                sessionId: currentSessionId,
+                version: rxVer,
+                gridSize: rxGrid
               },
               [bitmap]
             );
@@ -479,6 +497,9 @@ function dispatchViaCanvas(workerObj, sx, sy, sw, sh, roi, frameId, currentSessi
     offscreenCtx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
     const imgData = offscreenCtx.getImageData(0, 0, sw, sh);
 
+    const rxVer = rxVersionSelect?.value === '1' ? 1 : (rxVersionSelect?.value === '2' ? 2 : 'auto');
+    const rxGrid = parseInt(rxGridSelect?.value || '80', 10);
+
     workerObj.worker.postMessage(
       {
         type: 'decode_frame',
@@ -490,7 +511,9 @@ function dispatchViaCanvas(workerObj, sx, sy, sw, sh, roi, frameId, currentSessi
         frameId,
         workerId: workerObj.id,
         poolMode: true,
-        sessionId: currentSessionId || sessionEpoch
+        sessionId: currentSessionId || sessionEpoch,
+        version: rxVer,
+        gridSize: rxGrid
       },
       [imgData.data.buffer] // Transferable buffer
     );

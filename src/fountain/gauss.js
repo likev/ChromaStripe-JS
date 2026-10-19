@@ -92,12 +92,13 @@ export function solveBinarySystem(equations, numUnknowns) {
   }
 
   // Lazy RHS evaluation helper: evaluates the linear combination of original RHS payloads
+  const words = equations[0]?.rhs?.length || 112;
   const evalRhs = (hRow) => {
-    const out = new Uint32Array(112);
+    const out = new Uint32Array(words);
     for (let i = 0; i < numEqs; i++) {
       if ((hRow[i >>> 5] & (1 << (i & 31))) !== 0) {
         const eqRhs = equations[i].rhs;
-        for (let w = 0; w < 112; w++) {
+        for (let w = 0; w < words; w++) {
           out[w] ^= eqRhs[w];
         }
       }
@@ -134,7 +135,7 @@ export function solveBinarySystem(equations, numUnknowns) {
     }
     if (hasH) {
       const rowRhs = evalRhs(H[r]);
-      for (let w = 0; w < 112; w++) {
+      for (let w = 0; w < words; w++) {
         if (rowRhs[w] !== 0) {
           return { success: false, rank, partialSolutions, reducedEquations };
         }

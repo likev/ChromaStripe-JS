@@ -3,13 +3,13 @@
  * droplet fountain generation, and RGBA frame rendering.
  */
 
-import { PAYLOAD_BYTES, PROTOCOL_VERSION } from '../frame/constants.js';
+import { PAYLOAD_BYTES, PROTOCOL_VERSION, PROTOCOL_VERSION_V2, V2_PAYLOAD_BYTES } from '../frame/constants.js';
 import { digestSha256 } from '../core/sha256.js';
-import { compressDeflateRaw } from './compression.js';
+import { compressDeflateRaw, compressAuto } from './compression.js';
 import { encodeManifest } from './manifest.js';
 import { encodeDroplet } from '../fountain/encoder.js';
 import { getDropletPhase } from '../fountain/schedule.js';
-import { buildPacket } from '../frame/packet.js';
+import { buildPacket, buildPacketV2 } from '../frame/packet.js';
 import { renderFrame } from '../frame/renderer.js';
 
 export class TxSession {
@@ -22,6 +22,11 @@ export class TxSession {
    * @param {number} [options.rotation=0]
    * @param {number} [options.corePx]
    * @param {number} [options.guardPx]
+   * @param {number} [options.version=1]
+   * @param {number} [options.gridSize=80]
+   * @param {number} [options.bitsPerCell]
+   * @param {number} [options.numStripes]
+   * @param {number} [options.rateMode=1]
    */
   constructor(fileData, options = {}) {
     this.fileData = fileData;
@@ -31,6 +36,21 @@ export class TxSession {
     this.rotation = options.rotation || 0;
     this.corePx = options.corePx !== undefined ? options.corePx : undefined;
     this.guardPx = options.guardPx !== undefined ? options.guardPx : undefined;
+
+    this.version = options.version || 1;
+    this.gridSize = options.gridSize || 80;
+    this.bitsPerCell = options.bitsPerCell || (this.version === 2 ? 6 : 3);
+    this.numStripes = options.numStripes || (this.version === 2 ? 8 : 4);
+    this.rateMode = options.rateMode !== undefined ? options.rateMode : 1; // 1 = HIGH_RATE
+
+    if (options.payloadWords) {
+      this.wordsPerBlock = options.payloadWords;
+    } else if (options.turbo) {
+      this.wordsPerBlock = 112;
+    } else {
+      this.wordsPerBlock = this.version === 2 ? 56 : 112;
+    }
+    this.payloadBytes = this.wordsPerBlock * 4; // 224 for v2, 448 for v1 or v2 Turbo
 
     this.isInitialized = false;
     this.K = 0;
@@ -49,20 +69,27 @@ export class TxSession {
     const originalSize = this.fileData.length;
     const sha256Bytes = await digestSha256(this.fileData);
 
-    // Attempt deflate-raw compression
     let payload = this.fileData;
     let isCompressed = false;
+    let compressionFormat;
 
-    if (originalSize > 64) {
-      try {
-        const compressed = await compressDeflateRaw(this.fileData);
-        // Only use compression if at least 2% smaller
-        if (compressed.length <= originalSize * 0.98) {
-          payload = compressed;
-          isCompressed = true;
+    if (this.version === 2) {
+      const compRes = await compressAuto(this.fileData);
+      payload = compRes.data;
+      isCompressed = compRes.isCompressed;
+      compressionFormat = compRes.format;
+    } else {
+      if (originalSize > 64) {
+        try {
+          const compressed = await compressDeflateRaw(this.fileData);
+          // Only use compression if at least 2% smaller
+          if (compressed.length <= originalSize * 0.98) {
+            payload = compressed;
+            isCompressed = true;
+          }
+        } catch (_) {
+          // Fall back to uncompressed
         }
-      } catch (_) {
-        // Fall back to uncompressed
       }
     }
 
@@ -75,27 +102,29 @@ export class TxSession {
       originalSize,
       payloadSize,
       sha256Bytes,
-      isCompressed
+      isCompressed,
+      compressionFormat,
+      version: this.version
     });
 
     // SessionId = first 2 bytes of SHA-256(manifest)
     const manifestSha = await digestSha256(this.manifestBytes);
     this.sessionId = ((manifestSha[0] << 8) | manifestSha[1]) >>> 0;
 
-    // Build source stream: manifest + payload + padding to multiple of 448
+    // Build source stream: manifest + payload + padding to multiple of payloadBytes
     const totalStreamLen = this.manifestBytes.length + payloadSize;
-    this.K = Math.max(1, Math.ceil(totalStreamLen / PAYLOAD_BYTES));
-    const paddedLen = this.K * PAYLOAD_BYTES;
+    this.K = Math.max(1, Math.ceil(totalStreamLen / this.payloadBytes));
+    const paddedLen = this.K * this.payloadBytes;
 
     const stream = new Uint8Array(paddedLen);
     stream.set(this.manifestBytes, 0);
     stream.set(payload, this.manifestBytes.length);
 
-    // Slice into K source blocks (each Uint32Array(112))
+    // Slice into K source blocks (each Uint32Array(wordsPerBlock))
     this.sourceBlocks = new Array(this.K);
     for (let i = 0; i < this.K; i++) {
-      const blockU8 = stream.subarray(i * PAYLOAD_BYTES, (i + 1) * PAYLOAD_BYTES);
-      const blockU32 = new Uint32Array(112);
+      const blockU8 = stream.subarray(i * this.payloadBytes, (i + 1) * this.payloadBytes);
+      const blockU32 = new Uint32Array(this.wordsPerBlock);
       new Uint8Array(blockU32.buffer).set(blockU8);
       this.sourceBlocks[i] = blockU32;
     }
@@ -122,11 +151,13 @@ export class TxSession {
     }
 
     const f = this.frameNo++;
+    const S = this.numStripes;
     let seeds;
-    if (this.K > 8) {
-      const cycleLen = Math.max(this.K + 4, Math.round(1.5 * this.K));
+    if (this.K > 2 * S) {
+      const cycleLen = Math.max(this.K + S, Math.round(1.5 * this.K));
       const p = Math.ceil(0.15 * this.K);
-      const rawSeeds = [4 * f, 4 * f + 1, 4 * f + 2, 4 * f + 3];
+      const rawSeeds = [];
+      for (let i = 0; i < S; i++) rawSeeds.push(S * f + i);
       seeds = rawSeeds.map(s => {
         const cycleIdx = Math.floor(s / cycleLen);
         const slotInCycle = s % cycleLen;
@@ -142,29 +173,47 @@ export class TxSession {
         return this.K + p + cycleIdx * p3Len + p3Slot;
       });
     } else {
-      seeds = [4 * f, 4 * f + 1, 4 * f + 2, 4 * f + 3];
+      seeds = [];
+      for (let i = 0; i < S; i++) seeds.push(S * f + i);
     }
-    const packets = new Array(4);
+    const packets = new Array(S);
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < S; i++) {
       const seed = seeds[i];
       const phase = getDropletPhase(seed, this.K);
       const dropletU32 = encodeDroplet(seed, this.sourceBlocks);
 
-      packets[i] = buildPacket(
-        {
-          ver: PROTOCOL_VERSION,
-          stripeIdx: i,
-          phase,
-          seed,
-          K: this.K,
-          sessionId: this.sessionId
-        },
-        dropletU32
-      );
+      if (this.version === 2) {
+        packets[i] = buildPacketV2(
+          {
+            stripeIdx: i,
+            phase,
+            seed,
+            K: this.K,
+            sessionId: this.sessionId,
+            rateMode: this.rateMode
+          },
+          dropletU32
+        );
+      } else {
+        packets[i] = buildPacket(
+          {
+            ver: PROTOCOL_VERSION,
+            stripeIdx: i,
+            phase,
+            seed,
+            K: this.K,
+            sessionId: this.sessionId
+          },
+          dropletU32
+        );
+      }
     }
 
     const renderRes = renderFrame(packets, {
+      version: this.version,
+      gridSize: this.gridSize,
+      bitsPerCell: this.bitsPerCell,
       scale: this.scale,
       rotation: this.rotation,
       corePx: this.corePx,

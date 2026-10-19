@@ -4,7 +4,7 @@
  */
 
 import { projectH, solveHomography } from './homography.js';
-import { getLayout } from '../frame/layout.js';
+import { getLayout, getLayoutV2 } from '../frame/layout.js';
 
 const N_BINS = 8;
 const COS_LUT = new Float64Array(N_BINS);
@@ -25,17 +25,21 @@ export class TimingRefiner {
    * @param {number} height - Camera height
    * @param {Float64Array} H - Homography matrix
    * @param {Array<{x: number, y: number}>} [corners] - Optional corner points
+   * @param {number} [cachedK1] - Optional cached k1
+   * @param {number} [gridSize=80] - Grid dimension
    */
-  constructor(rgba, width, height, H, corners = null, cachedK1 = null) {
+  constructor(rgba, width, height, H, corners = null, cachedK1 = null, gridSize = 80) {
     this.H = H;
     this.width = width;
     this.height = height;
+    this.gridSize = gridSize || 80;
+    const G = this.gridSize;
 
     this.corners = corners || [
       projectH(H, 3.5, 3.5),
-      projectH(H, 76.5, 3.5),
-      projectH(H, 3.5, 76.5),
-      projectH(H, 76.5, 76.5)
+      projectH(H, G - 3.5, 3.5),
+      projectH(H, 3.5, G - 3.5),
+      projectH(H, G - 3.5, G - 3.5)
     ];
 
     this.duGrid = new Float32Array(64);
@@ -87,9 +91,10 @@ export class TimingRefiner {
           if (!H_u) return -Infinity;
         }
 
+        const G = this.gridSize;
         let contrast = 0;
         // Top and bottom timing borders
-        for (let c = 8; c <= 71; c++) {
+        for (let c = 8; c <= G - 9; c++) {
           const s = ((c - 8) & 1) === 0 ? 1 : -1;
           const uT = c + 0.5, vT = 0.5;
           const dT = 1.0 / (H_u[6] * uT + H_u[7] * vT + 1.0);
@@ -103,7 +108,7 @@ export class TimingRefiner {
             pyT = cy + ny * f * normScale;
           }
 
-          const uB = c + 0.5, vB = 79.5;
+          const uB = c + 0.5, vB = G - 0.5;
           const dB = 1.0 / (H_u[6] * uB + H_u[7] * vB + 1.0);
           let pxB = (H_u[0] * uB + H_u[1] * vB + H_u[2]) * dB;
           let pyB = (H_u[3] * uB + H_u[4] * vB + H_u[5]) * dB;
@@ -119,7 +124,7 @@ export class TimingRefiner {
         }
 
         // Left and right timing borders
-        for (let r = 8; r <= 71; r++) {
+        for (let r = 8; r <= G - 9; r++) {
           const s = ((r - 8) & 1) === 0 ? 1 : -1;
           const uL = 0.5, vL = r + 0.5;
           const dL = 1.0 / (H_u[6] * uL + H_u[7] * vL + 1.0);
@@ -133,7 +138,7 @@ export class TimingRefiner {
             pyL = cy + ny * f * normScale;
           }
 
-          const uR = 79.5, vR = r + 0.5;
+          const uR = G - 0.5, vR = r + 0.5;
           const dR = 1.0 / (H_u[6] * uR + H_u[7] * vR + 1.0);
           let pxR = (H_u[0] * uR + H_u[1] * vR + H_u[2]) * dR;
           let pyR = (H_u[3] * uR + H_u[4] * vR + H_u[5]) * dR;
@@ -229,13 +234,14 @@ export class TimingRefiner {
     ]);
 
     if (H_undist) {
-      this.duField = new Float32Array(6400);
-      this.dvField = new Float32Array(6400);
+      const G = this.gridSize;
+      this.duField = new Float32Array(G * G);
+      this.dvField = new Float32Array(G * G);
       this.hasLensDistortion = true;
-      for (let r = 0; r < 80; r++) {
+      for (let r = 0; r < G; r++) {
         const vNom = r + 0.5;
-        const rowOffset = r * 80;
-        for (let c = 0; c < 80; c++) {
+        const rowOffset = r * G;
+        for (let c = 0; c < G; c++) {
           const uNom = c + 0.5;
           const pLinear = projectH(H_undist, uNom, vNom);
           const pDist = dist(pLinear);
@@ -249,24 +255,26 @@ export class TimingRefiner {
   }
 
   _computeGuardPhaseField(rgba, width, height, H) {
-    const layout = getLayout();
+    const G = this.gridSize;
+    const layout = G === 80 ? getLayout() : getLayoutV2({ gridSize: G });
     const uBins = new Float64Array(N_BINS);
     const vBins = new Float64Array(N_BINS);
     const { duGrid, dvGrid, width: w, height: h } = this;
+    const blockSize = G / 8;
 
     for (let qr = 0; qr < 8; qr++) {
       const rStep = (qr === 7) ? 1 : 2;
       for (let qc = 0; qc < 8; qc++) {
         uBins.fill(0);
         vBins.fill(0);
-        const rStart = qr * 10 + 1;
-        const cStart = qc * 10 + 1;
+        const rStart = Math.round(qr * blockSize) + 1;
+        const cStart = Math.round(qc * blockSize) + 1;
         const cStep = (qc === 0 || qc === 7 || qr === 7) ? 1 : 2;
-        const cEnd = (qc === 0 || qc === 7) ? cStart + 9 : cStart + 8;
-        const rEnd = (qr === 0 || qr === 7) ? rStart + 9 : rStart + 8;
+        const cEnd = Math.round((qc + 1) * blockSize) - 1;
+        const rEnd = Math.round((qr + 1) * blockSize) - 1;
 
         for (let r = rStart; r < rEnd; r += rStep) {
-          const rowOffset = r * 80;
+          const rowOffset = r * G;
           for (let col = cStart; col < cEnd; col += cStep) {
             const cellIdx = rowOffset + col;
             if (layout.cellClass[cellIdx] === 1) continue;
@@ -345,13 +353,15 @@ export class TimingRefiner {
   /**
    * Returns refined offset (du, dv) in logical cell space for cell (u, v).
    *
-   * @param {number} u - 0..79
-   * @param {number} v - 0..79
+   * @param {number} u - 0..gridSize-1
+   * @param {number} v - 0..gridSize-1
    * @returns {{ du: number, dv: number }}
    */
   getOffset(u, v) {
-    const gx = (u - 5.0) * 0.1;
-    const gy = (v - 5.0) * 0.1;
+    const G = this.gridSize;
+    const blockSize = G / 8;
+    const gx = (u - blockSize * 0.5) / blockSize;
+    const gy = (v - blockSize * 0.5) / blockSize;
     const i = Math.max(0, Math.min(6, Math.floor(gx)));
     const j = Math.max(0, Math.min(6, Math.floor(gy)));
     const s = Math.max(-0.5, Math.min(1.5, gx - i));
@@ -363,9 +373,9 @@ export class TimingRefiner {
                     t       * ((1 - s) * this.dvGrid[i01] + s * this.dvGrid[i11]);
 
     if (this.hasLensDistortion && this.duField) {
-      const iu = Math.max(0, Math.min(79, Math.round(u)));
-      const iv = Math.max(0, Math.min(79, Math.round(v)));
-      const idx = iv * 80 + iu;
+      const iu = Math.max(0, Math.min(G - 1, Math.round(u)));
+      const iv = Math.max(0, Math.min(G - 1, Math.round(v)));
+      const idx = iv * G + iu;
       return {
         du: this.duField[idx] + duPhase,
         dv: this.dvField[idx] + dvPhase

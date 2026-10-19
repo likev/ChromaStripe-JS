@@ -30,14 +30,18 @@ export function encodeManifest(meta) {
   const out = new Uint8Array(totalLen);
   const view = new DataView(out.buffer);
 
-  // Magic "CSv1"
-  out[0] = 0x43; out[1] = 0x53; out[2] = 0x76; out[3] = 0x31;
+  // Magic "CSv1" or "CSv2"
+  const isV2 = meta.version === 2;
+  if (isV2) {
+    out[0] = 0x43; out[1] = 0x53; out[2] = 0x76; out[3] = 0x32;
+    out[6] = meta.compressionFormat !== undefined ? (meta.compressionFormat & 0xFF) : (meta.isCompressed ? 1 : 0);
+  } else {
+    out[0] = 0x43; out[1] = 0x53; out[2] = 0x76; out[3] = 0x31;
+    out[6] = meta.isCompressed ? 1 : 0;
+  }
 
   // manifestLen (u16)
   view.setUint16(4, totalLen, false);
-
-  // flags (u8)
-  out[6] = meta.isCompressed ? 1 : 0;
 
   // originalSize (u32)
   view.setUint32(7, meta.originalSize >>> 0, false);
@@ -70,13 +74,11 @@ export function encodeManifest(meta) {
 export function decodeManifest(streamBytes) {
   if (streamBytes.length < 49) return null; // Minimum header length
 
-  // Check magic "CSv1"
-  if (
-    streamBytes[0] !== 0x43 ||
-    streamBytes[1] !== 0x53 ||
-    streamBytes[2] !== 0x76 ||
-    streamBytes[3] !== 0x31
-  ) {
+  // Check magic "CSv1" or "CSv2"
+  const isV1 = streamBytes[0] === 0x43 && streamBytes[1] === 0x53 && streamBytes[2] === 0x76 && streamBytes[3] === 0x31;
+  const isV2 = streamBytes[0] === 0x43 && streamBytes[1] === 0x53 && streamBytes[2] === 0x76 && streamBytes[3] === 0x32;
+
+  if (!isV1 && !isV2) {
     return null;
   }
 
@@ -85,7 +87,10 @@ export function decodeManifest(streamBytes) {
   if (streamBytes.length < manifestLen) return null;
 
   const flags = streamBytes[6];
-  const isCompressed = (flags & 1) !== 0;
+  const isCompressed = flags !== 0;
+  const compressionFormat = isV2 ? flags : (isCompressed ? 1 : 0);
+  const version = isV2 ? 2 : 1;
+
   const originalSize = view.getUint32(7, false);
   const payloadSize = view.getUint32(11, false);
 
@@ -110,7 +115,9 @@ export function decodeManifest(streamBytes) {
       originalSize,
       payloadSize,
       sha256Bytes,
-      isCompressed
+      isCompressed,
+      compressionFormat,
+      version
     },
     manifestLen
   };

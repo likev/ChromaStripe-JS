@@ -22,6 +22,13 @@ self.onmessage = async (e) => {
       return;
     }
 
+    if (type === 'set_options') {
+      const { version, gridSize } = e.data;
+      decoder.setOptions({ version, gridSize });
+      self.postMessage({ type: 'options_set' });
+      return;
+    }
+
     if (type === 'decode_frame') {
       const { roi, hintCorners, frameId, workerId, poolMode, sessionId } = e.data;
       let { rgba, width, height } = e.data;
@@ -68,7 +75,10 @@ self.onmessage = async (e) => {
       }
 
       const t0 = performance.now();
-      const decRes = decoder.decode(rgba, width, height, roi);
+      const decOptions = (e.data.version !== undefined || e.data.gridSize !== undefined || e.data.bitsPerCell !== undefined)
+        ? { version: e.data.version, gridSize: e.data.gridSize, bitsPerCell: e.data.bitsPerCell }
+        : null;
+      const decRes = decoder.decode(rgba, width, height, roi, decOptions);
       const decodeMs = performance.now() - t0;
       const corners = decRes.corners;
 

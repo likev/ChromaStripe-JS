@@ -5,7 +5,7 @@
 
 import { FountainDecoder } from '../fountain/decoder.js';
 import { decodeManifest } from './manifest.js';
-import { decompressDeflateRaw } from './compression.js';
+import { decompressDeflateRaw, decompressFormatted } from './compression.js';
 import { digestSha256 } from '../core/sha256.js';
 
 export class RxSession {
@@ -82,7 +82,11 @@ export class RxSession {
 
       let finalData = rawPayload;
       if (manifest.isCompressed) {
-        finalData = await decompressDeflateRaw(rawPayload);
+        if (manifest.compressionFormat !== undefined) {
+          finalData = await decompressFormatted(rawPayload, manifest.compressionFormat);
+        } else {
+          finalData = await decompressDeflateRaw(rawPayload);
+        }
       }
 
       // Check SHA-256
