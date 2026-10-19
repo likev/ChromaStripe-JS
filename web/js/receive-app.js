@@ -326,6 +326,8 @@ function startReceiving() {
   if (loadFileBtn) loadFileBtn.style.display = 'none';
   const placeholder = document.getElementById('stagePlaceholder');
   if (placeholder) placeholder.style.display = 'none';
+  const videoContainer = document.querySelector('.video-container');
+  if (videoContainer) videoContainer.style.display = 'block';
   progressPanel.style.display = 'block';
 
   rxSession.reset();

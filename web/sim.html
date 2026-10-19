@@ -30,10 +30,10 @@
   </header>
 
   <main style="max-width:1100px;">
-    <div style="display:grid; grid-template-columns: 1fr 340px; gap:2rem;">
+    <div class="sim-container">
       <!-- Left side: Simulated Camera Feed & Overlays -->
       <div>
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <div class="sim-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
           <h3>Synthetic Camera View (L2)</h3>
           <button id="runSimBtn" class="btn">Start Simulation</button>
         </div>
@@ -159,7 +159,7 @@
       await txSession.init();
 
       rxSession = new RxSession();
-      frameDecoder = new FrameDecoder();
+      frameDecoder = new FrameDecoder({ version: 'auto' });
 
       txFramesMap.clear();
 

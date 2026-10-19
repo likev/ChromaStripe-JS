@@ -256,6 +256,9 @@ startBtn.addEventListener('click', () => {
   pauseBtn.style.display = 'inline-block';
   hud.style.display = 'grid';
 
+  const settingsPanel = document.getElementById('settingsPanel');
+  if (settingsPanel) settingsPanel.open = false;
+
   const { dim } = updateTxDimensions();
   renderer = new TxCanvasRenderer(canvas, 1, dim);
   isRunning = true;
@@ -293,7 +296,8 @@ function renderLoop(now) {
       const phaseNum = getDropletPhase(frame.seeds[0], session.K);
       const phaseNames = ['Systematic', 'Parity', 'Fountain'];
       document.getElementById('hudPhase').textContent = phaseNames[phaseNum];
-      document.getElementById('hudSeeds').textContent = `${frame.seeds[3] + 1}`;
+      const lastSeed = frame.seeds[frame.seeds.length - 1];
+      document.getElementById('hudSeeds').textContent = `${lastSeed + 1}`;
       const elapsed = (performance.now() - startTime) / 1000.0;
       document.getElementById('hudTime').textContent = formatTime(elapsed);
       document.getElementById('hudFps').textContent = (totalFramesSent / Math.max(1, elapsed)).toFixed(1);

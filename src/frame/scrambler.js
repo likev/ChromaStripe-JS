@@ -35,24 +35,26 @@ export function scramblePacket(packetBytes, stripeIdx, ver = PROTOCOL_VERSION) {
 }
 
 /**
- * Generates fill 3-bit symbols for extra/unused cells in middle stripes.
+ * Generates fill symbols for extra/unused cells in stripes.
  *
- * @param {number} stripeIdx - 0..3
+ * @param {number} stripeIdx - 0..7
  * @param {number} count - Number of fill symbols needed
  * @param {number} [ver=PROTOCOL_VERSION]
- * @returns {Uint8Array} Array of 3-bit symbols (0..7)
+ * @param {number} [bitsPerCell=3]
+ * @returns {Uint8Array} Array of symbols (0..(2^bitsPerCell - 1))
  */
-export function getFillSymbols(stripeIdx, count, ver = PROTOCOL_VERSION) {
+export function getFillSymbols(stripeIdx, count, ver = PROTOCOL_VERSION, bitsPerCell = 3) {
   let rng = getScramblerSeed(stripeIdx, ver);
   // Advance past the 542 packet bytes
   for (let i = 0; i < PACKET_TOTAL_BYTES; i++) {
     rng = xorshift32(rng);
   }
 
+  const mask = (1 << bitsPerCell) - 1;
   const fill = new Uint8Array(count);
   for (let i = 0; i < count; i++) {
     rng = xorshift32(rng);
-    fill[i] = (rng >>> 16) & 0x07;
+    fill[i] = (rng >>> 16) & mask;
   }
   return fill;
 }

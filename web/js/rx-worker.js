@@ -6,7 +6,7 @@
 import { FrameDecoder } from '../../src/vision/frameDecoder.js';
 import { RxSession } from '../../src/session/rxSession.js';
 
-let decoder = new FrameDecoder();
+let decoder = new FrameDecoder({ version: 'auto' });
 let rxSession = new RxSession();
 let offscreen = null;
 let offCtx = null;
@@ -16,7 +16,7 @@ self.onmessage = async (e) => {
     const { type } = e.data;
 
     if (type === 'reset') {
-      decoder = new FrameDecoder();
+      decoder = new FrameDecoder({ version: 'auto' });
       rxSession.reset();
       self.postMessage({ type: 'reset_done' });
       return;

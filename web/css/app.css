@@ -34,6 +34,8 @@ header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
 }
 
 header h1 {
@@ -43,10 +45,16 @@ header h1 {
   color: var(--primary);
 }
 
+.nav-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+}
+
 .nav-links a {
   color: var(--text-muted);
   text-decoration: none;
-  margin-left: 1.5rem;
   font-size: 0.9rem;
   transition: color 0.2s;
 }
@@ -322,6 +330,13 @@ input[type="range"] {
   gap: 0.75rem;
 }
 
+.sim-container {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 1.5rem;
+  width: 100%;
+}
+
 .stage {
   position: relative;
   min-width: 0;
@@ -361,6 +376,7 @@ input[type="range"] {
   color: var(--text-muted);
   font-size: 1rem;
   pointer-events: none;
+  z-index: 2;
 }
 
 .stage .video-container {
@@ -371,6 +387,7 @@ input[type="range"] {
   height: 100%;
   margin: 0;
   border-radius: 0;
+  z-index: 1;
 }
 
 .stage .video-container video,
@@ -388,7 +405,7 @@ input[type="range"] {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.65rem;
   padding-right: 2px;
 }
 
@@ -396,16 +413,38 @@ input[type="range"] {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 10px;
-  padding: 0.9rem;
+  padding: 0.75rem;
 }
 
-.panel-title {
+.panel-title,
+summary.panel-title {
   font-size: 0.7rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+summary.panel-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+summary.panel-title::-webkit-details-marker {
+  display: none;
+}
+
+details.panel summary.panel-title {
+  margin-bottom: 0;
+}
+
+details.panel[open] summary.panel-title {
+  margin-bottom: 0.5rem;
 }
 
 .sidebar .drop-zone {
@@ -492,6 +531,14 @@ input[type="range"] {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto;
+  }
+  .sim-container {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .sim-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
   .stage {
     aspect-ratio: 1 / 1;

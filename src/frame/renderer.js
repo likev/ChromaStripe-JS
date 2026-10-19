@@ -299,13 +299,17 @@ export function renderFrame(stripePackets, options = {}) {
       SYMBOL_SCRATCH[s] = scratch;
     }
 
-    if (bitsPerCell === 3 && n > 1446 && stripePackets.length === 4) {
-      bytesToSymbols(packet, 1446, scratch);
-      const fillCount = n - 1446;
-      const fill = getFillSymbols(s, fillCount);
-      scratch.set(fill, 1446);
+    const numPacketSymbols = Math.min(n, Math.ceil((packet.length * 8) / bitsPerCell));
+    if (bitsPerCell === 3 && packet.length === 542) {
+      bytesToSymbols(packet, Math.min(1446, n), scratch);
     } else {
-      bytesToSymbolsMultiBit(packet, bitsPerCell, n, scratch);
+      bytesToSymbolsMultiBit(packet, bitsPerCell, numPacketSymbols, scratch);
+    }
+
+    if (n > numPacketSymbols) {
+      const fillCount = n - numPacketSymbols;
+      const fill = getFillSymbols(s, fillCount, version, bitsPerCell);
+      scratch.set(fill, numPacketSymbols);
     }
 
     const startOffsets = stripeOffsets[s];

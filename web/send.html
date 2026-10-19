@@ -71,8 +71,8 @@
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-title">Settings</div>
+      <details id="settingsPanel" class="panel" open>
+        <summary class="panel-title">Settings <span>▾</span></summary>
         <div class="field">
           <label for="versionSelect">Protocol Version</label>
           <select id="versionSelect">
@@ -128,7 +128,7 @@
             <option value="2">Max (30 fps)</option>
           </select>
         </div>
-      </div>
+      </details>
 
       <div id="hud" class="hud-panel" style="display:none;">
         <div class="hud-item">
