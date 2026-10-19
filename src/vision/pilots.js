@@ -24,6 +24,7 @@ export class PilotCalibrator {
 
     // 16 entries of [Tr, Tg, Tb]
     this.thresholds = new Float32Array(16 * 3);
+    this.channelScales = new Float32Array(16 * 3);
     this._samplePilots(rgba);
   }
 
@@ -98,6 +99,13 @@ export class PilotCalibrator {
         this.thresholds[pIdx] = Tr;
         this.thresholds[pIdx + 1] = Tg;
         this.thresholds[pIdx + 2] = Tb;
+
+        const scaleR = Math.max(0.5, Math.min(1.8, (rHi - rLo) / 160.0));
+        const scaleG = Math.max(0.5, Math.min(1.8, (gHi - gLo) / 160.0));
+        const scaleB = Math.max(0.5, Math.min(1.8, (bHi - bLo) / 160.0));
+        this.channelScales[pIdx] = scaleR;
+        this.channelScales[pIdx + 1] = scaleG;
+        this.channelScales[pIdx + 2] = scaleB;
       }
     }
   }
@@ -148,6 +156,50 @@ export class PilotCalibrator {
       Tr: interp(0),
       Tg: interp(1),
       Tb: interp(2)
+    };
+  }
+
+  /**
+   * Bilinearly interpolates [scaleR, scaleG, scaleB] for cell coordinate (u, v).
+   *
+   * @param {number} u - 0..79
+   * @param {number} v - 0..79
+   * @returns {{ scaleR: number, scaleG: number, scaleB: number }}
+   */
+  getScales(u, v) {
+    const coords = this.pilotCoords;
+    let i = 0;
+    while (i < 2 && u > coords[i + 1]) i++;
+    let j = 0;
+    while (j < 2 && v > coords[j + 1]) j++;
+
+    const x0 = coords[i];
+    const x1 = coords[i + 1];
+    const y0 = coords[j];
+    const y1 = coords[j + 1];
+
+    const s = Math.max(-0.4, Math.min(1.4, (u - x0) / (x1 - x0)));
+    const t = Math.max(-0.4, Math.min(1.4, (v - y0) / (y1 - y0)));
+
+    const idx00 = (j * 4 + i) * 3;
+    const idx10 = (j * 4 + (i + 1)) * 3;
+    const idx01 = ((j + 1) * 4 + i) * 3;
+    const idx11 = ((j + 1) * 4 + (i + 1)) * 3;
+
+    const interp = (ch) => {
+      const v00 = this.channelScales[idx00 + ch];
+      const v10 = this.channelScales[idx10 + ch];
+      const v01 = this.channelScales[idx01 + ch];
+      const v11 = this.channelScales[idx11 + ch];
+      const top = (1.0 - s) * v00 + s * v10;
+      const bot = (1.0 - s) * v01 + s * v11;
+      return Math.max(0.5, Math.min(1.8, (1.0 - t) * top + t * bot));
+    };
+
+    return {
+      scaleR: interp(0),
+      scaleG: interp(1),
+      scaleB: interp(2)
     };
   }
 }

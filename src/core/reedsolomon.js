@@ -8,6 +8,12 @@ import { EXP, LOG, gfMul, gfDiv, gfAdd, gfInv } from './gf256.js';
 // Cache generator polynomials for common parity lengths
 const GEN_CACHE = new Map();
 
+// Scratch pool for zero-allocation RS decoding
+const SCRATCH_IS_ERASURE = new Uint8Array(256);
+const SCRATCH_CANDIDATE = new Uint8Array(256);
+const SCRATCH_MOD_SYN = new Uint8Array(64);
+const SCRATCH_OMEGA = new Uint8Array(64);
+
 /**
  * Computes generator polynomial g(x) = prod_{i=0}^{nsym-1} (x - alpha^i).
  * Roots are alpha^0 ... alpha^(nsym-1).
@@ -508,7 +514,8 @@ export function fastDecodeCodeword(cw, nsym, margins = null) {
   if (bm && bm.degree > 0 && bm.degree <= (nsym >> 1)) {
     const errPos = chienSearch(bm.lambda, n, bm.degree);
     if (errPos && errPos.length === bm.degree) {
-      const candidate = new Uint8Array(cw);
+      const candidate = SCRATCH_CANDIDATE.subarray(0, n);
+      candidate.set(cw);
       if (forneyCorrection(candidate, syndromes, bm.lambda, errPos)) {
         if (rsSyndromes(candidate, nsym) === null) {
           cw.set(candidate);
@@ -528,12 +535,22 @@ export function fastDecodeCodeword(cw, nsym, margins = null) {
   for (let i = 0; i < n; i++) indexed[i] = i;
   indexed.sort((a, b) => margins[a] - margins[b]);
 
-  const isErasure = new Uint8Array(n);
+  const isErasure = SCRATCH_IS_ERASURE.subarray(0, n);
+  isErasure.fill(0);
   let gamma = new Uint8Array([1]);
   let prevE = 0;
   const maxE = nsym - 4; // Ensure at least 2 error degrees of freedom (t >= 2)
 
-  for (const numE of [4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24]) {
+  // Count low-margin bytes (< 20) for adaptive stepping
+  let lowCount = 0;
+  while (lowCount < maxE && margins[indexed[lowCount]] < 20) {
+    lowCount++;
+  }
+  const allSteps = [4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24].filter(e => e <= maxE);
+  const minStep = lowCount >= 6 ? Math.max(4, (lowCount - 2) & ~1) : 4;
+  const trialSteps = allSteps.filter(e => e >= minStep);
+
+  for (const numE of trialSteps) {
     if (numE > maxE || numE >= n) break;
 
     // Incrementally extend gamma(x) with newly added erasures
@@ -547,7 +564,8 @@ export function fastDecodeCodeword(cw, nsym, margins = null) {
     prevE = numE;
 
     // Modified syndromes: Xi(x) = (S(x) * Gamma(x)) mod x^nsym
-    const modSyn = new Uint8Array(nsym);
+    const modSyn = SCRATCH_MOD_SYN.subarray(0, nsym);
+    modSyn.fill(0);
     for (let i = 0; i < nsym; i++) {
       let sum = 0;
       for (let j = 0; j <= i && j < gamma.length; j++) {
@@ -629,7 +647,8 @@ export function fastDecodeCodeword(cw, nsym, margins = null) {
     }
 
     // Forney algorithm for error values
-    const omega = new Uint8Array(nsym);
+    const omega = SCRATCH_OMEGA.subarray(0, nsym);
+    omega.fill(0);
     for (let i = 0; i < nsym; i++) {
       let sum = 0;
       for (let j = 0; j <= i && j < lambda.length; j++) {
@@ -640,7 +659,8 @@ export function fastDecodeCodeword(cw, nsym, margins = null) {
       omega[i] = sum;
     }
 
-    const candidate = new Uint8Array(cw);
+    const candidate = SCRATCH_CANDIDATE.subarray(0, n);
+    candidate.set(cw);
     let forneyOk = true;
 
     for (let idx = 0; idx < allPositions.length; idx++) {

@@ -80,7 +80,9 @@ export function symbolsMarginsToByteMargins(cellMargins, targetByteCount, outMar
   let bitPos = 0;
   const numSymbols = cellMargins.length;
   for (let s = 0; s < numSymbols && bitPos < totalBits; s++) {
-    const m = cellMargins[s];
+    const rawM = cellMargins[s];
+    const isStraddle = (bitPos & 7) >= 6;
+    const m = isStraddle ? rawM * 0.82 : rawM;
     for (let b = 2; b >= 0 && bitPos < totalBits; b--) {
       const byteIdx = bitPos >>> 3;
       if (m < out[byteIdx]) {

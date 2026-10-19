@@ -17,20 +17,20 @@ import { projectH } from './homography.js';
  * @param {number} Tb - Local Blue threshold
  * @returns {{ sym: number, margin: number }}
  */
-export function sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb) {
+export function sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb, scaleR = 1.0, scaleG = 1.0, scaleB = 1.0) {
   // Stage 1: Initial estimates
   const bG0 = gVal >= Tg ? 1 : 0;
-  const bR0 = rVal >= (Tr + (bG0 ? 14 : -10)) ? 1 : 0;
-  const bB0 = bVal >= (Tb + (bR0 ? 12 : -8) + (bG0 ? 12 : -8)) ? 1 : 0;
+  const bR0 = rVal >= (Tr + (bG0 ? 14 : -10) * scaleR) ? 1 : 0;
+  const bB0 = bVal >= (Tb + ((bR0 ? 12 : -8) + (bG0 ? 12 : -8)) * scaleB) ? 1 : 0;
 
   // Stage 2: 2-neighbor crosstalk-compensated decisions
-  const tgEff = Tg + (bR0 ? 6 : -10) + (bB0 ? 14 : -8);
+  const tgEff = Tg + ((bR0 ? 6 : -10) + (bB0 ? 14 : -8)) * scaleG;
   const bG = gVal >= tgEff ? 1 : 0;
 
-  const trEff = Tr + (bG ? 14 : -10) + (bB0 ? 2 : -2);
+  const trEff = Tr + ((bG ? 14 : -10) + (bB0 ? 2 : -2)) * scaleR;
   const bR = rVal >= trEff ? 1 : 0;
 
-  const tbEff = Tb + (bR ? 13 : -10) + (bG ? 13 : -10);
+  const tbEff = Tb + ((bR ? 13 : -10) + (bG ? 13 : -10)) * scaleB;
   const bB = bVal >= tbEff ? 1 : 0;
 
   const mR = Math.abs(rVal - trEff);
@@ -41,6 +41,39 @@ export function sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb) {
     sym: (bR << 2) | (bG << 1) | bB,
     margin: Math.min(mR, mG, mB)
   };
+}
+
+/**
+ * 8-Color Centroid / Nearest Neighbor Slicer.
+ *
+ * @param {number} rVal
+ * @param {number} gVal
+ * @param {number} bVal
+ * @param {Float32Array|number[]} centroids - 8x3 RGB centroids
+ * @returns {{ sym: number, margin: number }}
+ */
+export function sliceCellCentroid(rVal, gVal, bVal, centroids) {
+  let bestSym = 0;
+  let bestDist = Infinity;
+  let secondDist = Infinity;
+
+  for (let k = 0; k < 8; k++) {
+    const k3 = k * 3;
+    const dr = rVal - centroids[k3];
+    const dg = gVal - centroids[k3 + 1];
+    const db = bVal - centroids[k3 + 2];
+    const dist = dr * dr + dg * dg + db * db;
+    if (dist < bestDist) {
+      secondDist = bestDist;
+      bestDist = dist;
+      bestSym = k;
+    } else if (dist < secondDist) {
+      secondDist = dist;
+    }
+  }
+
+  const margin = Math.max(0, Math.sqrt(secondDist) - Math.sqrt(bestDist));
+  return { sym: bestSym, margin };
 }
 
 /**
@@ -98,9 +131,84 @@ export function sampleFullGrid(rgba, width, height, H, timingRefiner, outGridRgb
       const w01 = (1.0 - fx) * fy;
       const w11 = fx * fy;
 
-      gridRgb[idx3] = w00 * rgba[o00] + w10 * rgba[o10] + w01 * rgba[o01] + w11 * rgba[o11];
-      gridRgb[idx3 + 1] = w00 * rgba[o00 + 1] + w10 * rgba[o10 + 1] + w01 * rgba[o01 + 1] + w11 * rgba[o11 + 1];
-      gridRgb[idx3 + 2] = w00 * rgba[o00 + 2] + w10 * rgba[o10 + 2] + w01 * rgba[o01 + 2] + w11 * rgba[o11 + 2];
+      const rC = w00 * rgba[o00] + w10 * rgba[o10] + w01 * rgba[o01] + w11 * rgba[o11];
+      const gC = w00 * rgba[o00 + 1] + w10 * rgba[o10 + 1] + w01 * rgba[o01 + 1] + w11 * rgba[o11 + 1];
+      const bC = w00 * rgba[o00 + 2] + w10 * rgba[o10 + 2] + w01 * rgba[o01 + 2] + w11 * rgba[o11 + 2];
+
+      // 5-point inner-core sampling: center (0.40) + 4 symmetric satellites (0.15 each)
+      const invD = 1.0 / (H[6] * uRef + H[7] * vRef + 1.0);
+      const dxU = (H[0] - H[6] * x) * 0.14 * invD;
+      const dyU = (H[3] - H[6] * y) * 0.14 * invD;
+      const dxV = (H[1] - H[7] * x) * 0.14 * invD;
+      const dyV = (H[4] - H[7] * y) * 0.14 * invD;
+
+      let rSum = rC * 0.40;
+      let gSum = gC * 0.40;
+      let bSum = bC * 0.40;
+
+      // Point 1: u + 0.14
+      let sx = x + dxU, sy = y + dyU;
+      let sx0 = Math.floor(sx), sy0 = Math.floor(sy);
+      if (sx0 >= 0 && sx0 < width - 1 && sy0 >= 0 && sy0 < height - 1) {
+        const sfx = sx - sx0, sfy = sy - sy0;
+        const so00 = (sy0 * width + sx0) * 4;
+        const so10 = so00 + 4, so01 = ((sy0 + 1) * width + sx0) * 4, so11 = so01 + 4;
+        const sw00 = (1.0 - sfx) * (1.0 - sfy), sw10 = sfx * (1.0 - sfy), sw01 = (1.0 - sfx) * sfy, sw11 = sfx * sfy;
+        rSum += 0.15 * (sw00 * rgba[so00] + sw10 * rgba[so10] + sw01 * rgba[so01] + sw11 * rgba[so11]);
+        gSum += 0.15 * (sw00 * rgba[so00 + 1] + sw10 * rgba[so10 + 1] + sw01 * rgba[so01 + 1] + sw11 * rgba[so11 + 1]);
+        bSum += 0.15 * (sw00 * rgba[so00 + 2] + sw10 * rgba[so10 + 2] + sw01 * rgba[so01 + 2] + sw11 * rgba[so11 + 2]);
+      } else {
+        rSum += 0.15 * rC; gSum += 0.15 * gC; bSum += 0.15 * bC;
+      }
+
+      // Point 2: u - 0.14
+      sx = x - dxU; sy = y - dyU;
+      sx0 = Math.floor(sx); sy0 = Math.floor(sy);
+      if (sx0 >= 0 && sx0 < width - 1 && sy0 >= 0 && sy0 < height - 1) {
+        const sfx = sx - sx0, sfy = sy - sy0;
+        const so00 = (sy0 * width + sx0) * 4;
+        const so10 = so00 + 4, so01 = ((sy0 + 1) * width + sx0) * 4, so11 = so01 + 4;
+        const sw00 = (1.0 - sfx) * (1.0 - sfy), sw10 = sfx * (1.0 - sfy), sw01 = (1.0 - sfx) * sfy, sw11 = sfx * sfy;
+        rSum += 0.15 * (sw00 * rgba[so00] + sw10 * rgba[so10] + sw01 * rgba[so01] + sw11 * rgba[so11]);
+        gSum += 0.15 * (sw00 * rgba[so00 + 1] + sw10 * rgba[so10 + 1] + sw01 * rgba[so01 + 1] + sw11 * rgba[so11 + 1]);
+        bSum += 0.15 * (sw00 * rgba[so00 + 2] + sw10 * rgba[so10 + 2] + sw01 * rgba[so01 + 2] + sw11 * rgba[so11 + 2]);
+      } else {
+        rSum += 0.15 * rC; gSum += 0.15 * gC; bSum += 0.15 * bC;
+      }
+
+      // Point 3: v + 0.14
+      sx = x + dxV; sy = y + dyV;
+      sx0 = Math.floor(sx); sy0 = Math.floor(sy);
+      if (sx0 >= 0 && sx0 < width - 1 && sy0 >= 0 && sy0 < height - 1) {
+        const sfx = sx - sx0, sfy = sy - sy0;
+        const so00 = (sy0 * width + sx0) * 4;
+        const so10 = so00 + 4, so01 = ((sy0 + 1) * width + sx0) * 4, so11 = so01 + 4;
+        const sw00 = (1.0 - sfx) * (1.0 - sfy), sw10 = sfx * (1.0 - sfy), sw01 = (1.0 - sfx) * sfy, sw11 = sfx * sfy;
+        rSum += 0.15 * (sw00 * rgba[so00] + sw10 * rgba[so10] + sw01 * rgba[so01] + sw11 * rgba[so11]);
+        gSum += 0.15 * (sw00 * rgba[so00 + 1] + sw10 * rgba[so10 + 1] + sw01 * rgba[so01 + 1] + sw11 * rgba[so11 + 1]);
+        bSum += 0.15 * (sw00 * rgba[so00 + 2] + sw10 * rgba[so10 + 2] + sw01 * rgba[so01 + 2] + sw11 * rgba[so11 + 2]);
+      } else {
+        rSum += 0.15 * rC; gSum += 0.15 * gC; bSum += 0.15 * bC;
+      }
+
+      // Point 4: v - 0.14
+      sx = x - dxV; sy = y - dyV;
+      sx0 = Math.floor(sx); sy0 = Math.floor(sy);
+      if (sx0 >= 0 && sx0 < width - 1 && sy0 >= 0 && sy0 < height - 1) {
+        const sfx = sx - sx0, sfy = sy - sy0;
+        const so00 = (sy0 * width + sx0) * 4;
+        const so10 = so00 + 4, so01 = ((sy0 + 1) * width + sx0) * 4, so11 = so01 + 4;
+        const sw00 = (1.0 - sfx) * (1.0 - sfy), sw10 = sfx * (1.0 - sfy), sw01 = (1.0 - sfx) * sfy, sw11 = sfx * sfy;
+        rSum += 0.15 * (sw00 * rgba[so00] + sw10 * rgba[so10] + sw01 * rgba[so01] + sw11 * rgba[so11]);
+        gSum += 0.15 * (sw00 * rgba[so00 + 1] + sw10 * rgba[so10 + 1] + sw01 * rgba[so01 + 1] + sw11 * rgba[so11 + 1]);
+        bSum += 0.15 * (sw00 * rgba[so00 + 2] + sw10 * rgba[so10 + 2] + sw01 * rgba[so01 + 2] + sw11 * rgba[so11 + 2]);
+      } else {
+        rSum += 0.15 * rC; gSum += 0.15 * gC; bSum += 0.15 * bC;
+      }
+
+      gridRgb[idx3] = rSum;
+      gridRgb[idx3 + 1] = gSum;
+      gridRgb[idx3 + 2] = bSum;
     }
   }
 
@@ -190,8 +298,11 @@ export function sampleStripeCells(
     gVal -= beta * (nG - cnt * gVal);
     bVal -= beta * (nB - cnt * bVal);
 
-    // Local pilot thresholds
+    // Local pilot thresholds and scales
     const { Tr, Tg, Tb } = pilotCalibrator.getThresholds(c, r);
+    const { scaleR, scaleG, scaleB } = pilotCalibrator.getScales
+      ? pilotCalibrator.getScales(c, r)
+      : { scaleR: 1.0, scaleG: 1.0, scaleB: 1.0 };
 
     if (outRgb) {
       const idx3 = i * 3;
@@ -206,7 +317,7 @@ export function sampleStripeCells(
       outThresh[idx3 + 2] = Tb;
     }
 
-    const res = sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb);
+    const res = sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb, scaleR, scaleG, scaleB);
     symbols[i] = res.sym;
     margins[i] = res.margin;
   }

@@ -124,13 +124,22 @@ export class TxSession {
     const f = this.frameNo++;
     let seeds;
     if (this.K > 8) {
-      const cycleLen = this.K * 3;
+      const cycleLen = Math.max(this.K + 4, Math.round(1.5 * this.K));
+      const p = Math.ceil(0.15 * this.K);
       const rawSeeds = [4 * f, 4 * f + 1, 4 * f + 2, 4 * f + 3];
       seeds = rawSeeds.map(s => {
-        if (s >= cycleLen && (s % cycleLen) < this.K) {
-          return s % cycleLen;
+        const cycleIdx = Math.floor(s / cycleLen);
+        const slotInCycle = s % cycleLen;
+        if (slotInCycle < this.K) {
+          return (slotInCycle + cycleIdx) % this.K;
         }
-        return s;
+        if (slotInCycle < this.K + p) {
+          const pSlot = slotInCycle - this.K;
+          return this.K + ((pSlot + cycleIdx) % p);
+        }
+        const p3Slot = slotInCycle - (this.K + p);
+        const p3Len = cycleLen - (this.K + p);
+        return this.K + p + cycleIdx * p3Len + p3Slot;
       });
     } else {
       seeds = [4 * f, 4 * f + 1, 4 * f + 2, 4 * f + 3];

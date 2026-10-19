@@ -102,12 +102,21 @@ export function buildPacket(header, payloadU32, outPacket) {
  *   corrected?: number
  * }}
  */
+// Preallocated scratch pool for zero-allocation packet parsing
+const SCRATCH_BUF = new Uint8Array(PACKET_TOTAL_BYTES);
+const SCRATCH_CW0 = new Uint8Array(182);
+const SCRATCH_CW1 = new Uint8Array(180);
+const SCRATCH_CW2 = new Uint8Array(180);
+const SCRATCH_M0 = new Float32Array(182);
+const SCRATCH_M1 = new Float32Array(180);
+const SCRATCH_M2 = new Float32Array(180);
+const SCRATCH_DATA460 = new Uint8Array(460);
+
 export function parsePacket(rawBytes, expectedStripeIdx = -1, byteMargins = null) {
   if (rawBytes.length !== PACKET_TOTAL_BYTES) {
     return { ok: false, error: 'INVALID_PACKET_LENGTH' };
   }
 
-  const buf = new Uint8Array(rawBytes);
   let decodedData = null;
   let totalCorrected = 0;
   let matchedHeader = null;
@@ -116,13 +125,14 @@ export function parsePacket(rawBytes, expectedStripeIdx = -1, byteMargins = null
   const endStripe = expectedStripeIdx >= 0 ? expectedStripeIdx : 3;
 
   for (let candStripe = startStripe; candStripe <= endStripe; candStripe++) {
-    const testBuf = new Uint8Array(buf);
+    const testBuf = SCRATCH_BUF;
+    testBuf.set(rawBytes);
     scramblePacket(testBuf, candStripe, PROTOCOL_VERSION);
 
     // Try RS decode on 3 interleaved codewords
-    const cw0 = new Uint8Array(182);
-    const cw1 = new Uint8Array(180);
-    const cw2 = new Uint8Array(180);
+    const cw0 = SCRATCH_CW0;
+    const cw1 = SCRATCH_CW1;
+    const cw2 = SCRATCH_CW2;
 
     for (let i = 0; i < 460; i++) {
       const mod = i % 3;
@@ -139,9 +149,9 @@ export function parsePacket(rawBytes, expectedStripeIdx = -1, byteMargins = null
     // Interleaved byte margins for each codeword
     let m0 = null, m1 = null, m2 = null;
     if (byteMargins && byteMargins.length === PACKET_TOTAL_BYTES) {
-      m0 = new Float32Array(182);
-      m1 = new Float32Array(180);
-      m2 = new Float32Array(180);
+      m0 = SCRATCH_M0;
+      m1 = SCRATCH_M1;
+      m2 = SCRATCH_M2;
       for (let i = 0; i < 460; i++) {
         const mod = i % 3;
         const div = Math.floor(i / 3);
@@ -172,7 +182,7 @@ export function parsePacket(rawBytes, expectedStripeIdx = -1, byteMargins = null
     if (!r2.ok) continue;
 
     // RS succeeded on all 3 codewords! Reconstruct the 460 data bytes
-    const data460 = new Uint8Array(460);
+    const data460 = SCRATCH_DATA460;
     for (let i = 0; i < 460; i++) {
       const mod = i % 3;
       const div = Math.floor(i / 3);

@@ -18,18 +18,18 @@ export function sampleResidualDegree(rng, K) {
 
   const r = rng.nextFloat();
   let d;
-  if (r < 0.10) {
+  if (r < 0.15) {
     d = 1;
-  } else if (r < 0.30) {
+  } else if (r < 0.55) {
     d = 2;
-  } else if (r < 0.50) {
+  } else if (r < 0.75) {
     d = 3;
-  } else if (r < 0.70) {
-    d = Math.min(K, Math.max(4, Math.round(0.12 * K)));
-  } else if (r < 0.85) {
-    d = Math.min(K, Math.max(6, Math.round(0.25 * K)));
+  } else if (r < 0.87) {
+    d = 4 + rng.nextBelow(3);
+  } else if (r < 0.95) {
+    d = 8 + rng.nextBelow(9);
   } else {
-    d = Math.min(K, Math.max(8, Math.round(0.50 * K)));
+    d = Math.max(16, Math.round(0.15 * K));
   }
 
   return Math.min(K, Math.max(1, d));
