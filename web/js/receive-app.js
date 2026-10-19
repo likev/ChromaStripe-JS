@@ -1,10 +1,11 @@
 /**
- * Receiver web application logic: Camera acquisition, backpressure, overlay rendering, and completion flow.
+ * Receiver web application logic: Camera acquisition, backpressure, overlay rendering,
+ * multi-worker pool orchestration, cropped readback, and completion flow.
  */
 
 import { formatBytes } from './ui.js';
+import { RxSession } from '../../src/session/rxSession.js';
 
-let worker = null;
 let video = null;
 let overlayCanvas = null;
 let overlayCtx = null;
@@ -12,11 +13,19 @@ let offscreenCanvas = null;
 let offscreenCtx = null;
 
 let isCapturing = false;
-let workerBusy = false;
 let startTime = 0;
 let rxStartTime = 0;
-let totalBytesReceived = 0;
 let lastCorners = null;
+let cameraLocked = false;
+let frameSeq = 0;
+let nextWorkerIdx = 0;
+let sessionEpoch = 0;
+let latestCompletedFrameId = 0;
+let consecutiveMisses = 0;
+let hasCompleted = false;
+let bitmapTransferSupported = (typeof createImageBitmap === 'function' && typeof OffscreenCanvas !== 'undefined');
+
+const rxSession = new RxSession();
 
 const startBtn = document.getElementById('startCameraBtn');
 const cameraArea = document.getElementById('cameraArea');
@@ -29,18 +38,66 @@ const stripeBars = [
   document.getElementById('stripe3')
 ];
 
-// Initialize worker
-worker = new Worker(new URL('./rx-worker.js', import.meta.url), { type: 'module' });
+// Initialize multi-worker RX pool (2–3 Web Workers) to eliminate workerBusy frame drops
+const POOL_SIZE = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency)
+  ? Math.max(2, Math.min(3, navigator.hardwareConcurrency - 1))
+  : 2;
 
-worker.onmessage = (e) => {
-  workerBusy = false;
-  const { type, ok, corners, stripes, progress, decodeMs, result } = e.data;
-  lastCorners = (corners && corners.TL && corners.TR && corners.BL && corners.BR) ? corners : null;
+const workers = [];
+for (let i = 0; i < POOL_SIZE; i++) {
+  const w = new Worker(new URL('./rx-worker.js', import.meta.url), { type: 'module' });
+  const workerObj = {
+    id: i,
+    worker: w,
+    busy: false
+  };
+  w.onmessage = (e) => handleWorkerMessage(workerObj, e);
+  w.onerror = (err) => {
+    console.error(`RX Worker ${i} error:`, err);
+    workerObj.busy = false;
+  };
+  workers.push(workerObj);
+}
 
-  // Render overlay graphics
-  renderOverlay(corners, stripes);
+async function handleWorkerMessage(workerObj, e) {
+  workerObj.busy = false;
+  const { type, ok, corners, stripes, decodeMs, frameId, sessionId } = e.data;
+
+  // Discard frames from previous sessions
+  if (sessionId && sessionId !== sessionEpoch) {
+    return;
+  }
+
+  if (type === 'error') {
+    if (e.data.error && (e.data.error.includes('OffscreenCanvas') || e.data.error.includes('RGBA'))) {
+      bitmapTransferSupported = false;
+    }
+    return;
+  }
+
+  // Lock camera hardware (AE/AWB/Focus) if first valid stripe decoded (Tier 2 Item 9)
+  if (ok && stripes && stripes.some(s => s && s.ok)) {
+    tryLockCameraHardware();
+  }
+
+  // Ingest decoded stripe packets into the unified RxSession regardless of frame ordering
+  if (ok && stripes) {
+    for (const stripe of stripes) {
+      if (stripe && stripe.ok && stripe.header && stripe.payloadU32) {
+        await rxSession.ingestPacket(stripe.header, stripe.payloadU32);
+      }
+    }
+  }
+
+  // Check completion (single-fire)
+  if (rxSession.isComplete && rxSession.result && !hasCompleted) {
+    hasCompleted = true;
+    isCapturing = false;
+    showCompletion(rxSession.result);
+  }
 
   // Update progress HUD
+  const progress = rxSession.getProgress();
   if (progress) {
     const totalCollected = progress.solvedCount + (progress.waitingCount || 0);
     const distinct = progress.distinctCount !== undefined ? progress.distinctCount : Math.min(progress.K, totalCollected);
@@ -58,27 +115,107 @@ worker.onmessage = (e) => {
     }
   }
 
+  // Frame sequencing: Only update visual priors (corners, overlay, stripe bars) if this frame is newer
+  // than previously rendered frames to prevent out-of-order jitter
+  if (frameId !== undefined && frameId < latestCompletedFrameId) {
+    return;
+  }
+  if (frameId !== undefined) {
+    latestCompletedFrameId = frameId;
+  }
+
+  if (corners && corners.TL && corners.TR && corners.BL && corners.BR) {
+    lastCorners = corners;
+    consecutiveMisses = 0;
+    renderOverlay(corners, stripes);
+  } else {
+    consecutiveMisses++;
+    if (consecutiveMisses >= POOL_SIZE) {
+      lastCorners = null;
+    }
+    renderOverlay(null, null);
+  }
+
   if (decodeMs) {
     document.getElementById('rxDecodeMs').textContent = `${decodeMs.toFixed(1)} ms`;
   }
 
   // Update stripe status indicators
-  if (stripes) {
-    for (let s = 0; s < 4; s++) {
-      if (stripes[s]?.ok) {
-        stripeBars[s].className = 'stripe-bar active';
-      } else {
-        stripeBars[s].className = 'stripe-bar error';
-      }
+  for (let s = 0; s < 4; s++) {
+    if (stripes && stripes[s]?.ok) {
+      stripeBars[s].className = 'stripe-bar active';
+    } else {
+      stripeBars[s].className = 'stripe-bar error';
     }
   }
+}
 
-  // Check completion
-  if (type === 'complete' && result) {
-    isCapturing = false;
-    showCompletion(result);
+/**
+ * Attempts to lock camera hardware Auto-Exposure, Auto-White-Balance, and Focus
+ * via MediaStreamTrack advanced constraints to minimize transition motion/shutter blur.
+ */
+async function tryLockCameraHardware() {
+  if (cameraLocked || !video || !video.srcObject) return;
+  cameraLocked = true; // Attempt lock only once per session to avoid hammering camera driver
+
+  try {
+    const stream = video.srcObject;
+    const tracks = (typeof stream.getVideoTracks === 'function') ? stream.getVideoTracks() : [];
+    if (!tracks || tracks.length === 0) return;
+    const track = tracks[0];
+
+    if (typeof track.getCapabilities !== 'function' || typeof track.applyConstraints !== 'function') {
+      return;
+    }
+
+    const caps = track.getCapabilities();
+    const settings = (typeof track.getSettings === 'function') ? track.getSettings() : {};
+    const advanced = [];
+
+    // 1. Lock White Balance to manual if supported
+    if (caps.whiteBalanceMode && Array.isArray(caps.whiteBalanceMode) && caps.whiteBalanceMode.includes('manual')) {
+      advanced.push({ whiteBalanceMode: 'manual' });
+    }
+
+    // 2. Lock Exposure Mode to manual if supported
+    if (caps.exposureMode && Array.isArray(caps.exposureMode) && caps.exposureMode.includes('manual')) {
+      advanced.push({ exposureMode: 'manual' });
+    }
+
+    // 3. Lock Focus Mode to continuous or manual if supported
+    if (caps.focusMode && Array.isArray(caps.focusMode)) {
+      if (caps.focusMode.includes('continuous')) {
+        advanced.push({ focusMode: 'continuous' });
+      } else if (caps.focusMode.includes('manual')) {
+        advanced.push({ focusMode: 'manual' });
+      }
+    }
+
+    // 4. Cap exposure time to <= 1/60s for crisp rolling shutter transitions
+    // Units in W3C ImageCapture: 100-microsecond units (max > 100), ms (max <= 100), or seconds (max <= 1)
+    if (caps.exposureTime && typeof caps.exposureTime === 'object') {
+      const minExp = caps.exposureTime.min || 0;
+      const maxExp = caps.exposureTime.max || 100;
+      let cap60;
+      if (maxExp <= 1.0) {
+        cap60 = 1.0 / 60.0; // seconds
+      } else if (maxExp <= 100.0) {
+        cap60 = 1000.0 / 60.0; // milliseconds (~16.6 ms)
+      } else {
+        cap60 = 10000.0 / 60.0; // 100-microsecond units (~166.6 units)
+      }
+      const curExp = settings.exposureTime || cap60;
+      const targetExp = Math.max(minExp, Math.min(curExp, cap60, maxExp));
+      advanced.push({ exposureTime: targetExp });
+    }
+
+    if (advanced.length > 0) {
+      await track.applyConstraints({ advanced });
+    }
+  } catch (err) {
+    console.debug('Hardware camera locking note:', err);
   }
-};
+}
 
 function renderOverlay(corners, stripes) {
   overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
@@ -177,6 +314,19 @@ function startReceiving() {
   if (placeholder) placeholder.style.display = 'none';
   progressPanel.style.display = 'block';
 
+  rxSession.reset();
+  lastCorners = null;
+  cameraLocked = false;
+  latestCompletedFrameId = 0;
+  consecutiveMisses = 0;
+  hasCompleted = false;
+  const currentSessionId = ++sessionEpoch;
+
+  for (const w of workers) {
+    w.busy = false;
+    w.worker.postMessage({ type: 'reset', sessionId: currentSessionId });
+  }
+
   isCapturing = true;
   startTime = performance.now();
   rxStartTime = 0;
@@ -185,13 +335,27 @@ function startReceiving() {
 
 startBtn.addEventListener('click', async () => {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: 'environment',
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      }
-    });
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 60, min: 30 }
+        }
+      });
+    } catch (_) {
+      // Fallback for camera hardware not satisfying min: 30 (e.g., desktop/laptop webcams)
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 60 }
+        }
+      });
+    }
 
     video = document.getElementById('cameraVideo');
     video.srcObject = stream;
@@ -204,71 +368,134 @@ startBtn.addEventListener('click', async () => {
 });
 
 function scheduleNextFrame() {
-  if (!isCapturing) return;
+  if (!isCapturing || !video) return;
 
-  if ('requestVideoFrameCallback' in video) {
+  if (typeof video.requestVideoFrameCallback === 'function') {
     video.requestVideoFrameCallback(captureLoop);
   } else {
     requestAnimationFrame(captureLoop);
   }
 }
 
+/**
+ * Finds next available worker in the pool, round-robin.
+ */
+function getAvailableWorker() {
+  for (let i = 0; i < workers.length; i++) {
+    const idx = (nextWorkerIdx + i) % workers.length;
+    if (!workers[idx].busy) {
+      nextWorkerIdx = (idx + 1) % workers.length;
+      return workers[idx];
+    }
+  }
+  return null;
+}
+
 function captureLoop() {
   if (!isCapturing) return;
 
-  // Backpressure: drop frame if worker is still processing previous frame
-  if (!workerBusy && video && video.readyState >= 2) {
+  const workerObj = getAvailableWorker();
+  if (workerObj && video && video.readyState >= 2) {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
 
     if (vw > 0 && vh > 0) {
-      if (offscreenCanvas.width !== vw || offscreenCanvas.height !== vh) {
-        offscreenCanvas.width = vw;
-        offscreenCanvas.height = vh;
-      }
       if (overlayCanvas.width !== vw || overlayCanvas.height !== vh) {
         overlayCanvas.width = vw;
         overlayCanvas.height = vh;
       }
 
-      workerBusy = true;
-      try {
-        offscreenCtx.drawImage(video, 0, 0);
-
-        let sx = 0, sy = 0, sw = vw, sh = vh;
-        if (lastCorners) {
-          const minX = Math.max(0, Math.floor(Math.min(lastCorners.TL.x, lastCorners.TR.x, lastCorners.BL.x, lastCorners.BR.x) - 64));
-          const minY = Math.max(0, Math.floor(Math.min(lastCorners.TL.y, lastCorners.TR.y, lastCorners.BL.y, lastCorners.BR.y) - 64));
-          const maxX = Math.min(vw, Math.ceil(Math.max(lastCorners.TL.x, lastCorners.TR.x, lastCorners.BL.x, lastCorners.BR.x) + 64));
-          const maxY = Math.min(vh, Math.ceil(Math.max(lastCorners.TL.y, lastCorners.TR.y, lastCorners.BL.y, lastCorners.BR.y) + 64));
-          const cw = maxX - minX;
-          const ch = maxY - minY;
-          if (cw >= 160 && ch >= 160 && (cw * ch) < (vw * vh * 0.85)) {
-            sx = minX;
-            sy = minY;
-            sw = cw;
-            sh = ch;
-          }
+      // Compute cropped ROI from lastCorners (Tier 2 Item 8)
+      let sx = 0, sy = 0, sw = vw, sh = vh;
+      if (lastCorners) {
+        const minX = Math.max(0, Math.floor(Math.min(lastCorners.TL.x, lastCorners.TR.x, lastCorners.BL.x, lastCorners.BR.x) - 64));
+        const minY = Math.max(0, Math.floor(Math.min(lastCorners.TL.y, lastCorners.TR.y, lastCorners.BL.y, lastCorners.BR.y) - 64));
+        const maxX = Math.min(vw, Math.ceil(Math.max(lastCorners.TL.x, lastCorners.TR.x, lastCorners.BL.x, lastCorners.BR.x) + 64));
+        const maxY = Math.min(vh, Math.ceil(Math.max(lastCorners.TL.y, lastCorners.TR.y, lastCorners.BL.y, lastCorners.BR.y) + 64));
+        const cw = maxX - minX;
+        const ch = maxY - minY;
+        if (cw >= 160 && ch >= 160 && (cw * ch) < (vw * vh * 0.85)) {
+          sx = minX;
+          sy = minY;
+          sw = cw;
+          sh = ch;
         }
+      }
 
-        const imgData = offscreenCtx.getImageData(sx, sy, sw, sh);
+      const isCropped = (sw !== vw || sh !== vh);
+      const roi = isCropped ? { x: sx, y: sy } : null;
+      const frameId = ++frameSeq;
+      const currentSessionId = sessionEpoch;
+      workerObj.busy = true;
 
-        worker.postMessage(
-          {
-            type: 'decode_frame',
-            rgba: imgData.data,
-            width: sw,
-            height: sh,
-            roi: (sw !== vw || sh !== vh) ? { x: sx, y: sy } : null
-          },
-          [imgData.data.buffer] // Transferable buffer
-        );
-      } catch (err) {
-        console.error('Frame capture error:', err);
-        workerBusy = false;
+      // Offload readback off UI thread via createImageBitmap if supported
+      if (bitmapTransferSupported) {
+        createImageBitmap(video, sx, sy, sw, sh)
+          .then((bitmap) => {
+            if (!isCapturing || sessionEpoch !== currentSessionId) {
+              if (typeof bitmap.close === 'function') bitmap.close();
+              workerObj.busy = false;
+              return;
+            }
+            workerObj.worker.postMessage(
+              {
+                type: 'decode_frame',
+                bitmap,
+                width: sw,
+                height: sh,
+                roi,
+                hintCorners: lastCorners,
+                frameId,
+                workerId: workerObj.id,
+                poolMode: true,
+                sessionId: currentSessionId
+              },
+              [bitmap]
+            );
+          })
+          .catch(() => {
+            bitmapTransferSupported = false;
+            dispatchViaCanvas(workerObj, sx, sy, sw, sh, roi, frameId, currentSessionId);
+          });
+      } else {
+        dispatchViaCanvas(workerObj, sx, sy, sw, sh, roi, frameId, currentSessionId);
       }
     }
   }
 
   scheduleNextFrame();
+}
+
+/**
+ * Fallback cropped drawImage + getImageData when createImageBitmap transfer is unavailable.
+ */
+function dispatchViaCanvas(workerObj, sx, sy, sw, sh, roi, frameId, currentSessionId) {
+  try {
+    if (offscreenCanvas.width !== sw || offscreenCanvas.height !== sh) {
+      offscreenCanvas.width = sw;
+      offscreenCanvas.height = sh;
+    }
+    // 9-argument cropped drawImage (Item 8)
+    offscreenCtx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    const imgData = offscreenCtx.getImageData(0, 0, sw, sh);
+
+    workerObj.worker.postMessage(
+      {
+        type: 'decode_frame',
+        rgba: imgData.data,
+        width: sw,
+        height: sh,
+        roi,
+        hintCorners: lastCorners,
+        frameId,
+        workerId: workerObj.id,
+        poolMode: true,
+        sessionId: currentSessionId || sessionEpoch
+      },
+      [imgData.data.buffer] // Transferable buffer
+    );
+  } catch (err) {
+    console.error('Frame capture fallback error:', err);
+    workerObj.busy = false;
+  }
 }

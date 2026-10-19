@@ -1,5 +1,6 @@
 /**
  * Frame renderer: Paints 80x80 grid with finders, timing, pilots, guards, and 4 stripe packets into RGBA buffer.
+ * Ultra-fast Uint32Array packed word writes with precomputed LUT and cell offset caches.
  */
 
 import {
@@ -19,53 +20,88 @@ import { bytesToSymbols } from '../core/bitpack.js';
 import { getFillSymbols } from './scrambler.js';
 
 /**
- * Determines RGB color for a finder cell (u, v) in logical space.
+ * Endianness-safe conversion of [R, G, B, A] into a 32-bit integer matching native Uint32Array memory layout.
+ *
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @param {number} [a=255]
+ * @returns {number}
  */
-function getFinderColor(u, v) {
-  // Determine which corner: TL, TR, BL, BR
+export function makeRgbaU32(r, g, b, a = 255) {
+  const buf = new ArrayBuffer(4);
+  const u8 = new Uint8Array(buf);
+  u8[0] = r;
+  u8[1] = g;
+  u8[2] = b;
+  u8[3] = a;
+  return new Uint32Array(buf)[0];
+}
+
+export const COLOR_BLACK_U32 = makeRgbaU32(...COLOR_BLACK);
+export const COLOR_WHITE_U32 = makeRgbaU32(...COLOR_WHITE);
+export const COLOR_MAGENTA_U32 = makeRgbaU32(...COLOR_MAGENTA);
+export const COLOR_CYAN_U32 = makeRgbaU32(...COLOR_CYAN);
+export const COLOR_FLOOR_U32 = makeRgbaU32(...COLOR_FLOOR);
+
+export const PILOT_COLORS_U32 = [
+  COLOR_WHITE_U32,
+  COLOR_FLOOR_U32,
+  makeRgbaU32(40, 255, 255, 255), // Cyan
+  makeRgbaU32(255, 40, 255, 255)  // Magenta
+];
+
+export const SYMBOL_COLORS_U32 = new Uint32Array(
+  SYMBOL_COLORS.map(c => makeRgbaU32(...c))
+);
+
+/**
+ * Determines 32-bit packed RGBA color for a finder cell (u, v) in logical space.
+ */
+function getFinderColorU32(u, v) {
   const isRight = u >= 72;
   const isBottom = v >= 72;
 
-  // Local coordinates within 8x8 corner [0..7, 0..7]
   const lu = isRight ? u - 72 : u;
   const lv = isBottom ? v - 72 : v;
 
-  // Separator: inner edges of the 8x8 zone
-  // For TL: col 7 or row 7
-  // For TR: col 0 or row 7
-  // For BL: col 7 or row 0
-  // For BR: col 0 or row 0
   const isSeparator =
     (isRight ? lu === 0 : lu === 7) ||
     (isBottom ? lv === 0 : lv === 7);
 
   if (isSeparator) {
-    return COLOR_BLACK;
+    return COLOR_BLACK_U32;
   }
 
-  // Bullseye 7x7 local coords [0..6, 0..6]
   const bu = isRight ? lu - 1 : lu;
   const bv = isBottom ? lv - 1 : lv;
 
   const isOuter = bu === 0 || bu === 6 || bv === 0 || bv === 6;
   if (isOuter) {
-    return COLOR_BLACK;
+    return COLOR_BLACK_U32;
   }
 
   const isMiddle = bu === 1 || bu === 5 || bv === 1 || bv === 5;
   const isBR = isRight && isBottom;
 
   if (isMiddle) {
-    // Standard: Magenta; BR inverted: Cyan
-    return isBR ? COLOR_CYAN : COLOR_MAGENTA;
+    return isBR ? COLOR_CYAN_U32 : COLOR_MAGENTA_U32;
   }
 
-  // Core 3x3 (bu, bv in 2..4)
-  // Standard: Cyan; BR inverted: Magenta
-  return isBR ? COLOR_MAGENTA : COLOR_CYAN;
+  return isBR ? COLOR_MAGENTA_U32 : COLOR_CYAN_U32;
 }
 
-  const TEMPLATE_CACHE = new Map();
+const TEMPLATE_CACHE = new Map();
+const CELL_OFFSETS_CACHE = new Map();
+const INITIALIZED_BUFFERS = new WeakMap();
+
+// Zero-allocation scratch buffers for 3-bit packed symbols per stripe
+const SYMBOL_SCRATCH = [
+  new Uint8Array(1466),
+  new Uint8Array(1466),
+  new Uint8Array(1466),
+  new Uint8Array(1466)
+];
 
 function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
   const key = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}`;
@@ -74,24 +110,17 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
 
   const totalBytes = imgDim * imgDim * 4;
   template = new Uint8ClampedArray(totalBytes);
-  // Fill entire background with black and alpha = 255
-  for (let i = 3; i < totalBytes; i += 4) {
-    template[i] = 255;
-  }
+  const templateU32 = new Uint32Array(template.buffer);
+
+  // Fill entire background with black and alpha = 255 in one native fill
+  templateU32.fill(COLOR_BLACK_U32);
 
   const layout = getLayout();
 
-  const paintRect = (x, y, w, h, color) => {
-    const [r, g, b, a] = color;
+  const paintRectU32 = (x, y, w, h, colorU32) => {
     for (let py = y; py < y + h; py++) {
-      let offset = (py * imgDim + x) * 4;
-      for (let px = 0; px < w; px++) {
-        template[offset] = r;
-        template[offset + 1] = g;
-        template[offset + 2] = b;
-        template[offset + 3] = a;
-        offset += 4;
-      }
+      const offset = py * imgDim + x;
+      templateU32.fill(colorU32, offset, offset + w);
     }
   };
 
@@ -101,8 +130,8 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
       const idx = v * GRID_SIZE + u;
       if (layout.cellClass[idx] === 1 /* FINDER */) {
         const { u: ru, v: rv } = rotateCoords(u, v, rotation);
-        const color = getFinderColor(u, v);
-        paintRect(ru * cellPx, rv * cellPx, cellPx, cellPx, color);
+        const colorU32 = getFinderColorU32(u, v);
+        paintRectU32(ru * cellPx, rv * cellPx, cellPx, cellPx, colorU32);
       }
     }
   }
@@ -112,8 +141,8 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
     for (let i = 0; i < edgeList.length; i++) {
       const { r, c, isWhite } = edgeList[i];
       const { u: ru, v: rv } = rotateCoords(c, r, rotation);
-      const color = isWhite ? COLOR_WHITE : COLOR_FLOOR;
-      paintRect(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, color);
+      const colorU32 = isWhite ? COLOR_WHITE_U32 : COLOR_FLOOR_U32;
+      paintRectU32(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, colorU32);
     }
   };
   paintTimingEdge(layout.timingEdges.top);
@@ -122,30 +151,50 @@ function getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation) {
   paintTimingEdge(layout.timingEdges.right);
 
   // 3. Paint Pilot Blocks
-  const pilotColors = [
-    COLOR_WHITE,
-    COLOR_FLOOR,
-    [40, 255, 255, 255], // Cyan
-    [255, 40, 255, 255]  // Magenta
-  ];
-
   for (let i = 0; i < layout.pilotBlocks.length; i++) {
     const { r: rBase, c: cBase } = layout.pilotBlocks[i];
     const cellDefs = [
-      { r: rBase, c: cBase, color: pilotColors[0] },
-      { r: rBase, c: cBase + 1, color: pilotColors[1] },
-      { r: rBase + 1, c: cBase, color: pilotColors[2] },
-      { r: rBase + 1, c: cBase + 1, color: pilotColors[3] }
+      { r: rBase, c: cBase, colorU32: PILOT_COLORS_U32[0] },
+      { r: rBase, c: cBase + 1, colorU32: PILOT_COLORS_U32[1] },
+      { r: rBase + 1, c: cBase, colorU32: PILOT_COLORS_U32[2] },
+      { r: rBase + 1, c: cBase + 1, colorU32: PILOT_COLORS_U32[3] }
     ];
     for (let cd = 0; cd < 4; cd++) {
-      const { r, c, color } = cellDefs[cd];
+      const { r, c, colorU32 } = cellDefs[cd];
       const { u: ru, v: rv } = rotateCoords(c, r, rotation);
-      paintRect(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, color);
+      paintRectU32(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, colorU32);
     }
   }
 
   TEMPLATE_CACHE.set(key, template);
   return template;
+}
+
+/**
+ * Precomputes and caches 1D pixel start offsets for every data cell.
+ */
+function getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation) {
+  const key = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}`;
+  let offsets = CELL_OFFSETS_CACHE.get(key);
+  if (offsets) return offsets;
+
+  const layout = getLayout();
+  offsets = new Array(4);
+  for (let s = 0; s < 4; s++) {
+    const dataCells = layout.stripeDataCells[s];
+    const n = dataCells.length;
+    const startOffsets = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      const { r, c } = dataCells[i];
+      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
+      const x = ru * cellPx + guardPx;
+      const y = rv * cellPx + guardPx;
+      startOffsets[i] = y * imgDim + x;
+    }
+    offsets[s] = startOffsets;
+  }
+  CELL_OFFSETS_CACHE.set(key, offsets);
+  return offsets;
 }
 
 /**
@@ -179,52 +228,148 @@ export function renderFrame(stripePackets, options = {}) {
     cellPx = corePx + 2 * guardPx;
   }
   const imgDim = GRID_SIZE * cellPx;
-
   const totalBytes = imgDim * imgDim * 4;
+  const templateKey = `${imgDim}_${cellPx}_${corePx}_${guardPx}_${rotation}`;
+
   const rgba = (options.outRgba && options.outRgba.length === totalBytes)
     ? options.outRgba
     : new Uint8ClampedArray(totalBytes);
 
   const staticTemplate = getStaticTemplate(imgDim, cellPx, corePx, guardPx, rotation);
-  rgba.set(staticTemplate);
+
+  // If the provided buffer has already been initialized with this static template,
+  // skip copying template to save ~2.5 MB of memory operations per frame.
+  if (INITIALIZED_BUFFERS.get(rgba) !== templateKey) {
+    rgba.set(staticTemplate);
+    INITIALIZED_BUFFERS.set(rgba, templateKey);
+  }
 
   const layout = getLayout();
+  const stripeOffsets = getStripeCellOffsets(imgDim, cellPx, corePx, guardPx, rotation);
 
-  const paintRect = (x, y, w, h, color) => {
-    const [r, g, b, a] = color;
-    for (let py = y; py < y + h; py++) {
-      let offset = (py * imgDim + x) * 4;
-      for (let px = 0; px < w; px++) {
-        rgba[offset] = r;
-        rgba[offset + 1] = g;
-        rgba[offset + 2] = b;
-        rgba[offset + 3] = a;
-        offset += 4;
-      }
-    }
-  };
+  // View buffer as Uint32Array for ultra-fast word stores
+  const rgbaU32 = (rgba.byteOffset % 4 === 0)
+    ? new Uint32Array(rgba.buffer, rgba.byteOffset, rgba.byteLength >>> 2)
+    : null;
 
   // 4. Paint Data Stripes
   for (let s = 0; s < 4; s++) {
     const packet = stripePackets[s];
     const dataCells = layout.stripeDataCells[s];
-    const symbols = bytesToSymbols(packet, 1446);
+    const n = dataCells.length;
 
-    let allSymbols = symbols;
-    if (dataCells.length > 1446) {
-      const fillCount = dataCells.length - 1446;
+    const scratch = SYMBOL_SCRATCH[s];
+    bytesToSymbols(packet, 1446, scratch);
+
+    if (n > 1446) {
+      const fillCount = n - 1446;
       const fill = getFillSymbols(s, fillCount);
-      allSymbols = new Uint8Array(dataCells.length);
-      allSymbols.set(symbols, 0);
-      allSymbols.set(fill, 1446);
+      scratch.set(fill, 1446);
     }
 
-    for (let cIdx = 0; cIdx < dataCells.length; cIdx++) {
-      const { r, c } = dataCells[cIdx];
-      const sym = allSymbols[cIdx];
-      const color = SYMBOL_COLORS[sym];
-      const { u: ru, v: rv } = rotateCoords(c, r, rotation);
-      paintRect(ru * cellPx + guardPx, rv * cellPx + guardPx, corePx, corePx, color);
+    const startOffsets = stripeOffsets[s];
+
+    if (rgbaU32) {
+      // Fast path: 32-bit packed word stores
+      if (corePx === 1) {
+        for (let i = 0; i < n; i++) {
+          rgbaU32[startOffsets[i]] = SYMBOL_COLORS_U32[scratch[i]];
+        }
+      } else if (corePx === 2) {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          const off = startOffsets[i];
+          rgbaU32[off] = cU32;
+          rgbaU32[off + 1] = cU32;
+          const off2 = off + imgDim;
+          rgbaU32[off2] = cU32;
+          rgbaU32[off2 + 1] = cU32;
+        }
+      } else if (corePx === 3) {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          let off = startOffsets[i];
+          rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32;
+          off += imgDim;
+          rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32;
+          off += imgDim;
+          rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32;
+        }
+      } else if (corePx === 4) {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          let off = startOffsets[i];
+          for (let dy = 0; dy < 4; dy++) {
+            rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32;
+            off += imgDim;
+          }
+        }
+      } else if (corePx === 5) {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          let off = startOffsets[i];
+          for (let dy = 0; dy < 5; dy++) {
+            rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32; rgbaU32[off + 4] = cU32;
+            off += imgDim;
+          }
+        }
+      } else if (corePx === 6) {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          let off = startOffsets[i];
+          for (let dy = 0; dy < 6; dy++) {
+            rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32; rgbaU32[off + 4] = cU32; rgbaU32[off + 5] = cU32;
+            off += imgDim;
+          }
+        }
+      } else if (corePx === 7) {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          let off = startOffsets[i];
+          for (let dy = 0; dy < 7; dy++) {
+            rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32; rgbaU32[off + 4] = cU32; rgbaU32[off + 5] = cU32; rgbaU32[off + 6] = cU32;
+            off += imgDim;
+          }
+        }
+      } else if (corePx === 8) {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          let off = startOffsets[i];
+          for (let dy = 0; dy < 8; dy++) {
+            rgbaU32[off] = cU32; rgbaU32[off + 1] = cU32; rgbaU32[off + 2] = cU32; rgbaU32[off + 3] = cU32;
+            rgbaU32[off + 4] = cU32; rgbaU32[off + 5] = cU32; rgbaU32[off + 6] = cU32; rgbaU32[off + 7] = cU32;
+            off += imgDim;
+          }
+        }
+      } else {
+        for (let i = 0; i < n; i++) {
+          const cU32 = SYMBOL_COLORS_U32[scratch[i]];
+          let off = startOffsets[i];
+          for (let dy = 0; dy < corePx; dy++) {
+            for (let dx = 0; dx < corePx; dx++) {
+              rgbaU32[off + dx] = cU32;
+            }
+            off += imgDim;
+          }
+        }
+      }
+    } else {
+      // Fallback path for unaligned Uint8ClampedArray
+      for (let i = 0; i < n; i++) {
+        const [r, g, b, a] = SYMBOL_COLORS[scratch[i]];
+        let off = startOffsets[i] * 4;
+        for (let dy = 0; dy < corePx; dy++) {
+          let lineOff = off;
+          for (let dx = 0; dx < corePx; dx++) {
+            rgba[lineOff] = r;
+            rgba[lineOff + 1] = g;
+            rgba[lineOff + 2] = b;
+            rgba[lineOff + 3] = a;
+            lineOff += 4;
+          }
+          off += imgDim * 4;
+        }
+      }
     }
   }
 

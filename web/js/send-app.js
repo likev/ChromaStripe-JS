@@ -228,7 +228,8 @@ function renderLoop(now) {
     const targetIntervalMs = (txHold / 60) * 1000;
     if (!lastFrameTime || (now - lastFrameTime) >= targetIntervalMs - 4) {
       lastFrameTime = now;
-      const frame = session.getNextFrame();
+      const backingBuffer = renderer ? renderer.getBackingBuffer() : null;
+      const frame = session.getNextFrame(backingBuffer);
       renderer.displayFrame(frame.rgba, frame.width, frame.height);
       totalFramesSent++;
 

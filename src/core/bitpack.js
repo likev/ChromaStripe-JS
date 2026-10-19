@@ -16,8 +16,29 @@ export function bytesToSymbols(bytes, targetSymbolCount, outSymbols) {
   const numSymbols = targetSymbolCount || Math.ceil(totalBits / 3);
   const out = outSymbols || new Uint8Array(numSymbols);
 
-  let bitPos = 0;
-  for (let s = 0; s < numSymbols; s++) {
+  const fullTriplets = Math.floor(bytes.length / 3);
+  let bIdx = 0;
+  let sIdx = 0;
+  const maxS = numSymbols - 8;
+
+  // Ultra-fast 24-bit word chunking: 3 bytes produce exactly 8 3-bit symbols without loops
+  while (bIdx < fullTriplets * 3 && sIdx <= maxS) {
+    const w = (bytes[bIdx] << 16) | (bytes[bIdx + 1] << 8) | bytes[bIdx + 2];
+    out[sIdx] = (w >>> 21) & 7;
+    out[sIdx + 1] = (w >>> 18) & 7;
+    out[sIdx + 2] = (w >>> 15) & 7;
+    out[sIdx + 3] = (w >>> 12) & 7;
+    out[sIdx + 4] = (w >>> 9) & 7;
+    out[sIdx + 5] = (w >>> 6) & 7;
+    out[sIdx + 6] = (w >>> 3) & 7;
+    out[sIdx + 7] = w & 7;
+    bIdx += 3;
+    sIdx += 8;
+  }
+
+  // Handle trailing symbols beyond full 3-byte blocks
+  let bitPos = bIdx * 8;
+  for (let s = sIdx; s < numSymbols; s++) {
     let sym = 0;
     for (let b = 2; b >= 0; b--) {
       if (bitPos < totalBits) {
@@ -49,9 +70,31 @@ export function symbolsToBytes(symbols, targetByteCount, outBytes) {
   const totalBits = targetByteCount * 8;
   out.fill(0);
 
-  let bitPos = 0;
+  const fullOctets = Math.min(Math.floor(symbols.length / 8), Math.floor(targetByteCount / 3));
+  let sIdx = 0;
+  let bIdx = 0;
+
+  // Fast 24-bit word chunking: 8 3-bit symbols combine into 3 bytes without bit loops
+  while (sIdx < fullOctets * 8) {
+    const w = ((symbols[sIdx] & 7) << 21) |
+              ((symbols[sIdx + 1] & 7) << 18) |
+              ((symbols[sIdx + 2] & 7) << 15) |
+              ((symbols[sIdx + 3] & 7) << 12) |
+              ((symbols[sIdx + 4] & 7) << 9) |
+              ((symbols[sIdx + 5] & 7) << 6) |
+              ((symbols[sIdx + 6] & 7) << 3) |
+              (symbols[sIdx + 7] & 7);
+    out[bIdx] = (w >>> 16) & 0xFF;
+    out[bIdx + 1] = (w >>> 8) & 0xFF;
+    out[bIdx + 2] = w & 0xFF;
+    sIdx += 8;
+    bIdx += 3;
+  }
+
+  // Handle trailing bytes/bits
+  let bitPos = bIdx * 8;
   const numSymbols = symbols.length;
-  for (let s = 0; s < numSymbols && bitPos < totalBits; s++) {
+  for (let s = sIdx; s < numSymbols && bitPos < totalBits; s++) {
     const sym = symbols[s] & 7;
     for (let b = 2; b >= 0 && bitPos < totalBits; b--) {
       const bit = (sym >>> b) & 1;

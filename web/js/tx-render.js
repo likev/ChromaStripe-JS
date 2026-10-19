@@ -138,6 +138,9 @@ export class TxCanvasRenderer {
     if (this.ctx) {
       this.ctx.imageSmoothingEnabled = false;
     }
+    if (canvas && canvas.style) {
+      canvas.style.imageRendering = 'pixelated';
+    }
 
     let targetDim = 800;
     if (typeof scaleOrOptions === 'object' && scaleOrOptions !== null) {
@@ -164,10 +167,21 @@ export class TxCanvasRenderer {
     this.dim = dim;
     this.canvas.width = dim;
     this.canvas.height = dim;
+    if (this.canvas && this.canvas.style) {
+      this.canvas.style.imageRendering = 'pixelated';
+    }
     if (this.ctx) {
       this.ctx.imageSmoothingEnabled = false;
       this.imgData = this.ctx.createImageData(dim, dim);
     }
+  }
+
+  /**
+   * Returns preallocated ImageData buffer for zero-copy frame generation.
+   * @returns {Uint8ClampedArray|null}
+   */
+  getBackingBuffer() {
+    return this.imgData ? this.imgData.data : null;
   }
 
   /**
@@ -183,7 +197,11 @@ export class TxCanvasRenderer {
     if (frameDim !== this.dim || !this.imgData || this.imgData.data.length !== rgba.length) {
       this.setSize(frameDim);
     }
-    this.imgData.data.set(rgba);
-    this.ctx.putImageData(this.imgData, 0, 0);
+    if (this.imgData && rgba !== this.imgData.data) {
+      this.imgData.data.set(rgba);
+    }
+    if (this.ctx && this.imgData) {
+      this.ctx.putImageData(this.imgData, 0, 0);
+    }
   }
 }
