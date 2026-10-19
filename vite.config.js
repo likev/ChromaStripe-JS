@@ -36,7 +36,7 @@ function chromaStripePwaPlugin() {
             results = results.concat(collectFiles(fullPath, baseDir));
           } else if (entry.isFile()) {
             const rel = path.relative(baseDir, fullPath).replace(/\\/g, '/');
-            if (rel !== 'sw.js' && !rel.endsWith('.map')) {
+            if (rel !== 'sw.js' && !rel.endsWith('.map') && rel !== '_headers') {
               results.push(rel);
             }
           }

@@ -194,6 +194,18 @@ describe('PWA: Service Worker and Build Integration', () => {
     }
   });
 
+  test('Cloudflare Pages _headers file exists and prevents sw.js and manifest caching', () => {
+    const pubHeadersPath = path.join(PUBLIC_DIR, '_headers');
+    const distHeadersPath = path.join(DIST_DIR, '_headers');
+    assert.ok(fs.existsSync(pubHeadersPath), 'web/public/_headers must exist');
+    assert.ok(fs.existsSync(distHeadersPath), 'dist/_headers must exist after build');
+
+    const content = fs.readFileSync(distHeadersPath, 'utf-8');
+    assert.ok(content.includes('/sw.js'), '_headers must configure /sw.js');
+    assert.ok(content.includes('no-cache'), '_headers must set no-cache for sw.js');
+    assert.ok(content.includes('/manifest.webmanifest'), '_headers must configure manifest');
+  });
+
   test('getServiceWorkerScopeAndUrl resolves correctly in both root and nested subpaths', () => {
     // Test Node fallback
     const defaultResolution = getServiceWorkerScopeAndUrl();

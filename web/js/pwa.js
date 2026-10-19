@@ -47,7 +47,10 @@ export async function registerServiceWorker() {
 
   try {
     const { swUrl, scope } = getServiceWorkerScopeAndUrl();
-    const reg = await navigator.serviceWorker.register(swUrl, { scope });
+    const reg = await navigator.serviceWorker.register(swUrl, {
+      scope,
+      updateViaCache: 'none'
+    });
     swRegistration = reg;
 
     // Check for service worker updates
@@ -149,6 +152,13 @@ if (typeof window !== 'undefined') {
   window.addEventListener('appinstalled', () => {
     deferredInstallPrompt = null;
     dispatchPWAEvent('pwaInstalled');
+  });
+
+  // Check for updates when user returns to this tab
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      checkForUpdate();
+    }
   });
 
   // Auto-register on page load
