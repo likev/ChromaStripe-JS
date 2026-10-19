@@ -21,6 +21,8 @@ export class PilotCalibrator {
     this.H = H;
     this.timingRefiner = timingRefiner;
     this.gridSize = options.gridSize || 80;
+    this.gridRgb = options.gridRgb || null;
+    this.hasPamPilots = false;
 
     const G = this.gridSize;
     this.pilotCoords = (G === 80)
@@ -40,7 +42,32 @@ export class PilotCalibrator {
 
   _samplePilots(rgba) {
     const G = this.gridSize;
+    const gridRgb = this.gridRgb;
+    const beta = 0.045;
+    const rowStride = G * 3;
+
     const samplePilotCore = (u, v) => {
+      if (gridRgb) {
+        const c = Math.max(0, Math.min(G - 1, Math.floor(u)));
+        const r = Math.max(0, Math.min(G - 1, Math.floor(v)));
+        const idx = (r * G + c) * 3;
+        let rVal = gridRgb[idx];
+        let gVal = gridRgb[idx + 1];
+        let bVal = gridRgb[idx + 2];
+
+        // 2D Laplacian unsharp mask to align identically with data cell sampling
+        let nR = 0, nG = 0, nB = 0, cnt = 0;
+        if (r > 0)     { const k = idx - rowStride; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+        if (r < G - 1) { const k = idx + rowStride; nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+        if (c > 0)     { const k = idx - 3;         nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+        if (c < G - 1) { const k = idx + 3;         nR += gridRgb[k]; nG += gridRgb[k + 1]; nB += gridRgb[k + 2]; cnt++; }
+
+        rVal -= beta * (nR - cnt * rVal);
+        gVal -= beta * (nG - cnt * gVal);
+        bVal -= beta * (nB - cnt * bVal);
+        return [rVal, gVal, bVal];
+      }
+
       let du = 0, dv = 0;
       if (this.timingRefiner) {
         const off = this.timingRefiner.getOffset(
@@ -126,23 +153,78 @@ export class PilotCalibrator {
 
         // 4-PAM thresholds: Tr01, Tr12, Tr23, Tg01, Tg12, Tg23, Tb01, Tb12, Tb23
         const p4Idx = (rIdx * 4 + cIdx) * 9;
-        const isPamPilot = (wR < 90 && kR > 80 && kR < 150 && cR > 150 && cR < 220 && mR > 220);
+        const lumaW = 0.299 * wR + 0.587 * wG + 0.114 * wB;
+        const lumaK = 0.299 * kR + 0.587 * kG + 0.114 * kB;
+        const lumaM = 0.299 * mR + 0.587 * mG + 0.114 * mB;
+
+        // In 4-PAM, cell 0 (w) is darkest (L0) and cell 3 (m) is brightest (L3).
+        // In 2-PAM, cell 0 (w) is White (brightest) and cell 1 (k) is Black (darkest).
+        const isPamPilot = (lumaM > lumaW + 35) && (lumaW <= lumaK + 35);
         if (isPamPilot) {
-          this.thresholds4Pam[p4Idx] = (wR + kR) * 0.5;
-          this.thresholds4Pam[p4Idx + 1] = (kR + cR) * 0.5;
-          this.thresholds4Pam[p4Idx + 2] = (cR + mR) * 0.5;
+          this.hasPamPilots = true;
+          const rLevels = [wR, kR, cR, mR].sort((a, b) => a - b);
+          const gLevels = [wG, kG, cG, mG].sort((a, b) => a - b);
+          const bLevels = [wB, kB, cB, mB].sort((a, b) => a - b);
 
-          this.thresholds4Pam[p4Idx + 3] = (wG + kG) * 0.5;
-          this.thresholds4Pam[p4Idx + 4] = (kG + cG) * 0.5;
-          this.thresholds4Pam[p4Idx + 5] = (cG + mG) * 0.5;
+          const compute4PamThresh = (levels) => {
+            const lLo = levels[0];
+            const lHi = levels[3];
+            const span = Math.max(30, lHi - lLo);
 
-          this.thresholds4Pam[p4Idx + 6] = (wB + kB) * 0.5;
-          this.thresholds4Pam[p4Idx + 7] = (kB + cB) * 0.5;
-          this.thresholds4Pam[p4Idx + 8] = (cB + mB) * 0.5;
+            let t0 = (levels[0] + levels[1]) * 0.5;
+            let t1 = (levels[1] + levels[2]) * 0.5;
+            let t2 = (levels[2] + levels[3]) * 0.5;
+
+            const prop0 = lLo + span * 0.167;
+            const prop1 = lLo + span * 0.500;
+            const prop2 = lLo + span * 0.833;
+
+            const gap01 = levels[1] - levels[0];
+            const gap12 = levels[2] - levels[1];
+            const gap23 = levels[3] - levels[2];
+
+            if (gap01 < 18) {
+              t0 = prop0;
+              t1 = prop1;
+            }
+            if (gap23 < 18) {
+              t2 = prop2;
+              t1 = prop1;
+            }
+            if (gap12 < 18) {
+              t1 = prop1;
+            }
+
+            const minGap = 8;
+            t1 = Math.max(t0 + minGap, t1);
+            t2 = Math.max(t1 + minGap, t2);
+            t0 = Math.min(t1 - minGap, t0);
+            return [t0, t1, t2];
+          };
+
+          const [tr0, tr1, tr2] = compute4PamThresh(rLevels);
+          const [tg0, tg1, tg2] = compute4PamThresh(gLevels);
+          const [tb0, tb1, tb2] = compute4PamThresh(bLevels);
+
+          this.thresholds4Pam[p4Idx] = tr0;
+          this.thresholds4Pam[p4Idx + 1] = tr1;
+          this.thresholds4Pam[p4Idx + 2] = tr2;
+
+          this.thresholds4Pam[p4Idx + 3] = tg0;
+          this.thresholds4Pam[p4Idx + 4] = tg1;
+          this.thresholds4Pam[p4Idx + 5] = tg2;
+
+          this.thresholds4Pam[p4Idx + 6] = tb0;
+          this.thresholds4Pam[p4Idx + 7] = tb1;
+          this.thresholds4Pam[p4Idx + 8] = tb2;
+
+          this.thresholds[pIdx] = tr1;
+          this.thresholds[pIdx + 1] = tg1;
+          this.thresholds[pIdx + 2] = tb1;
         } else {
-          const dR = (rHi - rLo) / 3.0;
-          const dG = (gHi - gLo) / 3.0;
-          const dB = (bHi - bLo) / 3.0;
+          const dR = Math.max(10, (rHi - rLo) / 3.0);
+          const dG = Math.max(10, (gHi - gLo) / 3.0);
+          const dB = Math.max(10, (bHi - bLo) / 3.0);
 
           this.thresholds4Pam[p4Idx] = rLo + 0.5 * dR;
           this.thresholds4Pam[p4Idx + 1] = Tr;
@@ -274,8 +356,8 @@ export class PilotCalibrator {
     const y0 = coords[j];
     const y1 = coords[j + 1];
 
-    const s = Math.max(-0.4, Math.min(1.4, (u - x0) / (x1 - x0)));
-    const t = Math.max(-0.4, Math.min(1.4, (v - y0) / (y1 - y0)));
+    const s = Math.max(0.0, Math.min(1.0, (u - x0) / (x1 - x0)));
+    const t = Math.max(0.0, Math.min(1.0, (v - y0) / (y1 - y0)));
 
     const idx00 = (j * 4 + i) * 9;
     const idx10 = (j * 4 + (i + 1)) * 9;

@@ -116,7 +116,7 @@ async function handleWorkerMessage(workerObj, e) {
         rxStartTime = performance.now();
       }
       const elapsed = (performance.now() - rxStartTime) / 1000.0;
-      const bytesPerBlock = rxSession.fountainDecoder?.bytesPerBlock || 448;
+      const bytesPerBlock = rxSession.fountainDecoder ? (rxSession.fountainDecoder.words * 4) : 448;
       const kb = (distinct * bytesPerBlock) / 1024.0;
       document.getElementById('rxSpeed').textContent = `${(kb / Math.max(0.1, elapsed)).toFixed(1)} KB/s`;
     }
@@ -454,7 +454,7 @@ function captureLoop() {
               return;
             }
             const rxVer = rxVersionSelect?.value === '1' ? 1 : (rxVersionSelect?.value === '2' ? 2 : 'auto');
-            const rxGrid = parseInt(rxGridSelect?.value || '80', 10);
+            const rxGrid = rxGridSelect?.value === 'auto' ? 'auto' : parseInt(rxGridSelect?.value || '80', 10);
             workerObj.worker.postMessage(
               {
                 type: 'decode_frame',
@@ -500,7 +500,7 @@ function dispatchViaCanvas(workerObj, sx, sy, sw, sh, roi, frameId, currentSessi
     const imgData = offscreenCtx.getImageData(0, 0, sw, sh);
 
     const rxVer = rxVersionSelect?.value === '1' ? 1 : (rxVersionSelect?.value === '2' ? 2 : 'auto');
-    const rxGrid = parseInt(rxGridSelect?.value || '80', 10);
+    const rxGrid = rxGridSelect?.value === 'auto' ? 'auto' : parseInt(rxGridSelect?.value || '80', 10);
 
     workerObj.worker.postMessage(
       {

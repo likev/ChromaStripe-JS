@@ -4,10 +4,10 @@
  */
 
 import { findCorners } from './finder.js';
-import { solveHomography } from './homography.js';
+import { solveHomography, projectH } from './homography.js';
 import { TimingRefiner } from './timing.js';
 import { PilotCalibrator } from './pilots.js';
-import { sampleStripeCells, sampleFullGrid, sliceCellCausal, sliceCellCentroid } from './sampler.js';
+import { sampleStripeCells, sampleFullGrid, sliceCellCausal, sliceCellCentroid, sliceCell4Pam, sliceCell5Pam } from './sampler.js';
 import { getLayout, getLayoutV2 } from '../frame/layout.js';
 import {
   symbolsToBytes,
@@ -24,13 +24,58 @@ import {
   GRID_SIZE
 } from '../frame/constants.js';
 
+/**
+ * Detects grid density (80, 96, or 112) using fast timing track contrast discrimination.
+ *
+ * @param {Uint8ClampedArray|Uint8Array} rgba - Camera frame buffer
+ * @param {number} width - Frame width
+ * @param {number} height - Frame height
+ * @param {object} corners - { TL, TR, BL, BR }
+ * @returns {number} Detected grid density: 80, 96, or 112
+ */
+export function detectGridDensity(rgba, width, height, corners) {
+  if (!corners || !corners.TL || !corners.TR || !corners.BL || !corners.BR) {
+    return 80;
+  }
+  const cornerPts = [corners.TL, corners.TR, corners.BL, corners.BR];
+  let bestG = 80;
+  let bestScore = -Infinity;
+
+  for (const G of [80, 96, 112]) {
+    const H = solveHomography(cornerPts, G);
+    if (!H) continue;
+    let contrastSum = 0;
+    let count = 0;
+    for (const row of [0.5, G - 0.5]) {
+      for (let col = 8; col <= G - 9; col++) {
+        const { x, y } = projectH(H, col + 0.5, row);
+        const xi = Math.round(x);
+        const yi = Math.round(y);
+        if (xi >= 0 && xi < width && yi >= 0 && yi < height) {
+          const idx = (yi * width + xi) * 4;
+          const luma = 0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2];
+          contrastSum += ((col - 8) & 1) === 0 ? luma : -luma;
+          count++;
+        }
+      }
+    }
+    const score = count > 0 ? contrastSum / count : -Infinity;
+    if (score > bestScore) {
+      bestScore = score;
+      bestG = G;
+    }
+  }
+  return bestG;
+}
+
 export class FrameDecoder {
   constructor(options = {}) {
     this.options = { ...options };
     this.version = options.version || 1;
-    this.gridSize = options.gridSize || GRID_SIZE;
-    this.bitsPerCell = options.bitsPerCell || (this.version === 2 ? 6 : 3);
-    this.numStripes = options.numStripes || (this.version === 2 ? 8 : 4);
+    this.autoGrid = options.gridSize === 'auto' || this.version === 'auto';
+    this.gridSize = (options.gridSize && options.gridSize !== 'auto') ? options.gridSize : GRID_SIZE;
+    this.bitsPerCell = options.bitsPerCell || ((this.version === 2 || this.version === 'auto') ? 6 : 3);
+    this.numStripes = options.numStripes || ((this.version === 2 || this.version === 'auto') ? 8 : 4);
     this.rateMode = options.rateMode ?? 1;
 
     this.layoutV1 = getLayout();
@@ -40,9 +85,9 @@ export class FrameDecoder {
     this.lockCount = 0;
     this.missCount = 0;
 
-    const totalCells = this.gridSize * this.gridSize;
-    this.gridRgb = new Float32Array(totalCells * 3);
-    this.gridInBounds = new Uint8Array(totalCells);
+    const maxCells = 112 * 112;
+    this.gridRgb = new Float32Array(maxCells * 3);
+    this.gridInBounds = new Uint8Array(maxCells);
     this.centroids = null;
     this.lastCleanStripe = -1;
     this.lastCleanThresh = null;
@@ -53,11 +98,11 @@ export class FrameDecoder {
   }
 
   get stripeAccum() {
-    return this.version === 2 ? this.stripeAccumV2 : this.stripeAccumV1;
+    return (this.version === 2 || this.version === 'auto') ? this.stripeAccumV2 : this.stripeAccumV1;
   }
 
   set stripeAccum(val) {
-    if (this.version === 2) {
+    if (this.version === 2 || this.version === 'auto') {
       this.stripeAccumV2 = val;
     } else {
       this.stripeAccumV1 = val;
@@ -102,21 +147,28 @@ export class FrameDecoder {
       this.version = options.version;
       changed = true;
     }
-    if (options.gridSize !== undefined && options.gridSize !== this.gridSize) {
-      this.gridSize = options.gridSize;
-      changed = true;
+    if (options.gridSize !== undefined) {
+      if (options.gridSize === 'auto') {
+        this.autoGrid = true;
+      } else {
+        this.autoGrid = false;
+        if (options.gridSize !== this.gridSize) {
+          this.gridSize = options.gridSize;
+          changed = true;
+        }
+      }
     }
     if (options.bitsPerCell !== undefined && options.bitsPerCell !== this.bitsPerCell) {
       this.bitsPerCell = options.bitsPerCell;
       changed = true;
-    } else if (this.version === 2 && this.bitsPerCell === 3) {
+    } else if ((this.version === 2 || this.version === 'auto') && this.bitsPerCell === 3) {
       this.bitsPerCell = 6;
       changed = true;
     }
     if (options.numStripes !== undefined && options.numStripes !== this.numStripes) {
       this.numStripes = options.numStripes;
       changed = true;
-    } else if (this.version === 2 && this.numStripes === 4) {
+    } else if ((this.version === 2 || this.version === 'auto') && this.numStripes === 4) {
       this.numStripes = 8;
       changed = true;
     }
@@ -128,9 +180,6 @@ export class FrameDecoder {
       this.layoutV1 = getLayout();
       this.layoutV2 = getLayoutV2({ gridSize: this.gridSize, numStripes: this.numStripes || 8 });
       this.layout = this.version === 2 ? this.layoutV2 : this.layoutV1;
-      const totalCells = this.gridSize * this.gridSize;
-      this.gridRgb = new Float32Array(totalCells * 3);
-      this.gridInBounds = new Uint8Array(totalCells);
       this._resetAccum();
     }
   }
@@ -309,8 +358,13 @@ export class FrameDecoder {
     this.prevCorners = [globalCorners.TL, globalCorners.TR, globalCorners.BL, globalCorners.BR];
     this.lockCount++;
 
-    // 2. Solve Homography
-    const H = solveHomography([corners.TL, corners.TR, corners.BL, corners.BR], this.gridSize);
+    // 2. Grid density resolution
+    const activeGridSize = (this.autoGrid || this.version === 'auto')
+      ? detectGridDensity(rgba, width, height, corners)
+      : this.gridSize;
+
+    // 3. Solve Homography for active grid size
+    const H = solveHomography([corners.TL, corners.TR, corners.BL, corners.BR], activeGridSize);
     if (!H) {
       this._resetAccum();
       return {
@@ -321,7 +375,7 @@ export class FrameDecoder {
       };
     }
 
-    // 3. Timing track refinement & lens distortion compensation (parametrized with this.gridSize)
+    // 4. Timing track refinement & lens distortion compensation
     const timingRefiner = new TimingRefiner(
       rgba,
       width,
@@ -329,24 +383,27 @@ export class FrameDecoder {
       H,
       [corners.TL, corners.TR, corners.BL, corners.BR],
       this.k1,
-      this.gridSize
+      activeGridSize
     );
     if (this.k1 === null) {
       this.k1 = timingRefiner.bestK1;
     }
 
-    // 4. Pilot calibration with timing offset
-    const pilotCalibrator = new PilotCalibrator(rgba, width, height, H, timingRefiner, { gridSize: this.gridSize });
+    // 5. Pre-sample full cell grid FIRST so pilot calibrator can use matched unsharp mask
+    sampleFullGrid(rgba, width, height, H, timingRefiner, this.gridRgb, this.gridInBounds, activeGridSize);
 
-    // 5. Pre-sample full cell grid once for all stripes
-    sampleFullGrid(rgba, width, height, H, timingRefiner, this.gridRgb, this.gridInBounds, this.gridSize);
+    // 6. Pilot calibration with gridRgb and activeGridSize
+    const pilotCalibrator = new PilotCalibrator(rgba, width, height, H, timingRefiner, {
+      gridSize: activeGridSize,
+      gridRgb: this.gridRgb
+    });
 
     let resV2 = null;
     let resV1 = null;
 
     if (this.version === 2 || this.version === 'auto') {
-      resV2 = this._decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator);
-      if (this.version === 2 || resV2.validStripesCount > 0) {
+      resV2 = this._decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator, activeGridSize);
+      if (resV2.validStripesCount > 0 || activeGridSize !== 80 || pilotCalibrator.hasPamPilots) {
         if (resV2.validStripesCount > 0) {
           this.missCount = 0;
         } else {
@@ -365,7 +422,8 @@ export class FrameDecoder {
           stats: {
             totalMs: performance.now() - t0,
             validStripesCount: resV2.validStripesCount,
-            version: 2
+            version: 2,
+            gridSize: activeGridSize
           }
         };
       }
@@ -391,7 +449,8 @@ export class FrameDecoder {
         stats: {
           totalMs: performance.now() - t0,
           validStripesCount: resV1.validStripesCount,
-          version: resV1.validStripesCount > 0 ? 1 : (this.version === 'auto' ? 'auto' : 1)
+          version: resV1.validStripesCount > 0 ? 1 : (this.version === 'auto' ? 'auto' : 1),
+          gridSize: 80
         }
       };
     }
@@ -408,12 +467,12 @@ export class FrameDecoder {
     };
   }
 
-  _decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator) {
-    const numStripes = (this.version === 2 && this.numStripes) ? this.numStripes : 8;
-    const layout = this.layoutV2 || getLayoutV2({ gridSize: this.gridSize, numStripes });
+  _decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator, activeGridSize = 80) {
+    const numStripes = 8;
+    const layout = getLayoutV2({ gridSize: activeGridSize, numStripes });
     const stripes = new Array(numStripes);
     let validStripesCount = 0;
-    const bpc = (this.version === 2 && this.bitsPerCell) ? this.bitsPerCell : 6;
+    const bpc = (this.bitsPerCell && this.bitsPerCell !== 3) ? this.bitsPerCell : 6;
 
     for (let s = 0; s < numStripes; s++) {
       const dataCells = layout.stripeDataCells[s];
@@ -442,7 +501,7 @@ export class FrameDecoder {
         st.curThresh,
         this.gridRgb,
         this.gridInBounds,
-        { gridSize: this.gridSize, bitsPerCell: bpc }
+        { gridSize: activeGridSize, bitsPerCell: bpc }
       );
 
       if (!sampleRes.ok) {
@@ -454,43 +513,142 @@ export class FrameDecoder {
         continue;
       }
 
-      let packetRes = { ok: false };
-      // Check Turbo 488 / 496 bytes if stripe cell count supports it
-      if (sampleRes.symbols.length * bpc >= 488 * 8) {
-        const pkt488 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, 488);
-        const m488 = sampleRes.margins
-          ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, 488)
-          : null;
-        packetRes = parsePacketV2(pkt488, s, m488);
-        if (!packetRes.ok && sampleRes.symbols.length * bpc >= 496 * 8) {
-          const pkt496 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, 496);
-          const m496 = sampleRes.margins
-            ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, 496)
-            : null;
-          packetRes = parsePacketV2(pkt496, s, m496);
+      let mad = 0;
+      if (st.hasPrev) {
+        let diff = 0;
+        const len = count * 3;
+        for (let k = 0; k < len; k++) {
+          diff += Math.abs(st.curRgb[k] - st.prevRgb[k]);
+        }
+        mad = diff / len;
+      }
+
+      if (!st.hasPrev || mad > 14) {
+        st.count = 1;
+        st.decodedInHold = false;
+        st.lastResult = null;
+        st.sumRgb.set(st.curRgb);
+        st.sumThresh.set(st.curThresh);
+      } else {
+        st.count++;
+        const len = count * 3;
+        for (let k = 0; k < len; k++) {
+          st.sumRgb[k] += st.curRgb[k];
+          st.sumThresh[k] += st.curThresh[k];
         }
       }
 
-      // Check High-Rate single-codeword (250 bytes)
-      if (!packetRes.ok) {
-        const pkt250 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, V2_PACKET_BYTES_HIGH_RATE);
-        const m250 = sampleRes.margins
-          ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, V2_PACKET_BYTES_HIGH_RATE)
-          : null;
-        packetRes = parsePacketV2(pkt250, s, m250);
+      if (st.decodedInHold && mad < 10 && st.lastResult) {
+        stripes[s] = st.lastResult;
+        validStripesCount++;
+        st.prevRgb.set(st.curRgb);
+        st.prevThresh.set(st.curThresh);
+        st.hasPrev = true;
+        continue;
       }
 
-      // Check Standard rate single-codeword (254 bytes)
-      if (!packetRes.ok) {
-        const pkt254 = symbolsToBytesMultiBit(sampleRes.symbols, bpc, V2_PACKET_BYTES_STANDARD);
-        const m254 = sampleRes.margins
-          ? symbolsMarginsToByteMarginsMultiBit(sampleRes.margins, bpc, V2_PACKET_BYTES_STANDARD)
-          : null;
-        packetRes = parsePacketV2(pkt254, s, m254);
+      const tryParse = (symbols, margins) => {
+        let res = { ok: false };
+        const symBits = symbols.length * bpc;
+        const preferTurbo = activeGridSize >= 96 && symBits >= 488 * 8;
+
+        if (preferTurbo) {
+          const pkt488 = symbolsToBytesMultiBit(symbols, bpc, 488);
+          const m488 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 488) : null;
+          res = parsePacketV2(pkt488, s, m488);
+          if (!res.ok && symBits >= 496 * 8) {
+            const pkt496 = symbolsToBytesMultiBit(symbols, bpc, 496);
+            const m496 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 496) : null;
+            res = parsePacketV2(pkt496, s, m496);
+          }
+        }
+
+        if (!res.ok && symBits >= V2_PACKET_BYTES_HIGH_RATE * 8) {
+          const pkt250 = symbolsToBytesMultiBit(symbols, bpc, V2_PACKET_BYTES_HIGH_RATE);
+          const m250 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, V2_PACKET_BYTES_HIGH_RATE) : null;
+          res = parsePacketV2(pkt250, s, m250);
+        }
+        if (!res.ok && symBits >= V2_PACKET_BYTES_STANDARD * 8) {
+          const pkt254 = symbolsToBytesMultiBit(symbols, bpc, V2_PACKET_BYTES_STANDARD);
+          const m254 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, V2_PACKET_BYTES_STANDARD) : null;
+          res = parsePacketV2(pkt254, s, m254);
+        }
+
+        if (!res.ok && !preferTurbo && symBits >= 488 * 8) {
+          const pkt488 = symbolsToBytesMultiBit(symbols, bpc, 488);
+          const m488 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 488) : null;
+          res = parsePacketV2(pkt488, s, m488);
+          if (!res.ok && symBits >= 496 * 8) {
+            const pkt496 = symbolsToBytesMultiBit(symbols, bpc, 496);
+            const m496 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 496) : null;
+            res = parsePacketV2(pkt496, s, m496);
+          }
+        }
+        return res;
+      };
+
+      let packetRes = tryParse(sampleRes.symbols, sampleRes.margins);
+
+      if (!packetRes.ok && st.hasPrev && mad <= 14) {
+        for (let i = 0; i < count; i++) {
+          const { r, c } = dataCells[i];
+          const i3 = i * 3;
+          const rAvg = 0.5 * (st.curRgb[i3] + st.prevRgb[i3]);
+          const gAvg = 0.5 * (st.curRgb[i3 + 1] + st.prevRgb[i3 + 1]);
+          const bAvg = 0.5 * (st.curRgb[i3 + 2] + st.prevRgb[i3 + 2]);
+          if (bpc === 6 && pilotCalibrator?.getThresholds4Pam) {
+            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
+            const sliced = sliceCell4Pam(rAvg, gAvg, bAvg, t4);
+            st.accumSymbols[i] = sliced.sym;
+            st.accumMargins[i] = sliced.margin;
+          } else if (bpc === 5 && pilotCalibrator?.getThresholds4Pam) {
+            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
+            const { Tb } = pilotCalibrator.getThresholds(c, r);
+            const sliced = sliceCell5Pam(rAvg, gAvg, bAvg, t4, Tb);
+            st.accumSymbols[i] = sliced.sym;
+            st.accumMargins[i] = sliced.margin;
+          }
+        }
+        const pairRes = tryParse(st.accumSymbols, st.accumMargins);
+        if (pairRes.ok) {
+          packetRes = pairRes;
+        }
       }
+
+      if (!packetRes.ok && st.count >= 3 && mad <= 14) {
+        const inv = 1.0 / st.count;
+        for (let i = 0; i < count; i++) {
+          const { r, c } = dataCells[i];
+          const i3 = i * 3;
+          const rAvg = st.sumRgb[i3] * inv;
+          const gAvg = st.sumRgb[i3 + 1] * inv;
+          const bAvg = st.sumRgb[i3 + 2] * inv;
+          if (bpc === 6 && pilotCalibrator?.getThresholds4Pam) {
+            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
+            const sliced = sliceCell4Pam(rAvg, gAvg, bAvg, t4);
+            st.accumSymbols[i] = sliced.sym;
+            st.accumMargins[i] = sliced.margin;
+          } else if (bpc === 5 && pilotCalibrator?.getThresholds4Pam) {
+            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
+            const { Tb } = pilotCalibrator.getThresholds(c, r);
+            const sliced = sliceCell5Pam(rAvg, gAvg, bAvg, t4, Tb);
+            st.accumSymbols[i] = sliced.sym;
+            st.accumMargins[i] = sliced.margin;
+          }
+        }
+        const accRes = tryParse(st.accumSymbols, st.accumMargins);
+        if (accRes.ok) {
+          packetRes = accRes;
+        }
+      }
+
+      st.prevRgb.set(st.curRgb);
+      st.prevThresh.set(st.curThresh);
+      st.hasPrev = true;
 
       if (packetRes.ok) {
-        stripes[s] = {
+        st.decodedInHold = true;
+        st.lastResult = {
           stripeIdx: s,
           ok: true,
           header: packetRes.header,
@@ -498,10 +656,7 @@ export class FrameDecoder {
           corrected: packetRes.corrected
         };
         validStripesCount++;
-        st.lastResult = stripes[s];
-        st.prevRgb.set(st.curRgb);
-        st.prevThresh.set(st.curThresh);
-        st.hasPrev = true;
+        stripes[s] = st.lastResult;
       } else {
         stripes[s] = {
           stripeIdx: s,
