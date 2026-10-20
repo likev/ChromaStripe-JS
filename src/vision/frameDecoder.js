@@ -24,6 +24,9 @@ import {
   GRID_SIZE
 } from '../frame/constants.js';
 
+// Linear-light crosstalk unmixing strengths tried (in addition to the learned one) for 4-PAM stripes
+const XTALK_CANDIDATES = [0, 0.08, 0.14];
+
 /**
  * Detects grid density (80, 96, or 112) using fast timing track contrast discrimination.
  *
@@ -74,7 +77,7 @@ export class FrameDecoder {
     this.version = options.version || 1;
     this.autoGrid = options.gridSize === 'auto' || this.version === 'auto';
     this.gridSize = (options.gridSize && options.gridSize !== 'auto') ? options.gridSize : GRID_SIZE;
-    this.bitsPerCell = options.bitsPerCell || ((this.version === 2 || this.version === 'auto') ? 6 : 3);
+    this.bitsPerCell = options.bitsPerCell || null;
     this.numStripes = options.numStripes || ((this.version === 2 || this.version === 'auto') ? 8 : 4);
     this.rateMode = options.rateMode ?? 1;
 
@@ -92,6 +95,9 @@ export class FrameDecoder {
     this.lastCleanStripe = -1;
     this.lastCleanThresh = null;
     this.k1 = null;
+    this.fullFrameLens = null;
+    this.xtalkAlpha = 0;
+    this._lastTurbo = null;
 
     this.stripeAccumV1 = Array.from({ length: 4 }, () => this._newStripeSlot());
     this.stripeAccumV2 = Array.from({ length: 8 }, () => this._newStripeSlot());
@@ -161,9 +167,6 @@ export class FrameDecoder {
     if (options.bitsPerCell !== undefined && options.bitsPerCell !== this.bitsPerCell) {
       this.bitsPerCell = options.bitsPerCell;
       changed = true;
-    } else if ((this.version === 2 || this.version === 'auto') && this.bitsPerCell === 3) {
-      this.bitsPerCell = 6;
-      changed = true;
     }
     if (options.numStripes !== undefined && options.numStripes !== this.numStripes) {
       this.numStripes = options.numStripes;
@@ -194,6 +197,7 @@ export class FrameDecoder {
     this.lastCleanStripe = -1;
     this.lastCleanThresh = null;
     this.k1 = null;
+    this.fullFrameLens = null;
     for (let s = 0; s < 4; s++) {
       const st = this.stripeAccumV1[s];
       if (st) {
@@ -359,9 +363,10 @@ export class FrameDecoder {
     this.lockCount++;
 
     // 2. Grid density resolution
-    const activeGridSize = (this.autoGrid || this.version === 'auto')
-      ? detectGridDensity(rgba, width, height, corners)
-      : this.gridSize;
+    // v1 is always 80x80; otherwise only run density detection when auto-grid is on.
+    const activeGridSize = this.version === 1
+      ? 80
+      : (this.autoGrid ? detectGridDensity(rgba, width, height, corners) : this.gridSize);
 
     // 3. Solve Homography for active grid size
     const H = solveHomography([corners.TL, corners.TR, corners.BL, corners.BR], activeGridSize);
@@ -382,11 +387,17 @@ export class FrameDecoder {
       height,
       H,
       [corners.TL, corners.TR, corners.BL, corners.BR],
-      this.k1,
-      activeGridSize
+      // k1 is only searched on full frames. ROI crops reuse the cached value around the FULL frame's
+      // optical center (never the crop center); with no cached value they assume no lens distortion.
+      this.k1 !== null ? this.k1 : (roi ? 0 : null),
+      activeGridSize,
+      roi && this.fullFrameLens
+        ? { cx: this.fullFrameLens.cx - roi.x, cy: this.fullFrameLens.cy - roi.y, normScale: this.fullFrameLens.normScale }
+        : null
     );
-    if (this.k1 === null) {
+    if (this.k1 === null && !roi) {
       this.k1 = timingRefiner.bestK1;
+      this.fullFrameLens = { cx: width * 0.5, cy: height * 0.5, normScale: Math.min(width, height) * 0.5 };
     }
 
     // 5. Pre-sample full cell grid FIRST so pilot calibrator can use matched unsharp mask
@@ -398,40 +409,8 @@ export class FrameDecoder {
       gridRgb: this.gridRgb
     });
 
-    let resV2 = null;
-    let resV1 = null;
-
-    if (this.version === 2 || this.version === 'auto') {
-      resV2 = this._decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator, activeGridSize);
-      if (resV2.validStripesCount > 0 || activeGridSize !== 80 || pilotCalibrator.hasPamPilots) {
-        if (resV2.validStripesCount > 0) {
-          this.missCount = 0;
-        } else {
-          this.missCount = (this.missCount || 0) + 1;
-        }
-
-        if (this.lockCount >= 120) {
-          this.prevCorners = null;
-          this.lockCount = 0;
-        }
-
-        return {
-          ok: resV2.validStripesCount > 0,
-          corners: globalCorners,
-          stripes: resV2.stripes,
-          stats: {
-            totalMs: performance.now() - t0,
-            validStripesCount: resV2.validStripesCount,
-            version: 2,
-            gridSize: activeGridSize
-          }
-        };
-      }
-    }
-
-    if (this.version === 1 || this.version === 'auto') {
-      resV1 = this._decodeV1Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator);
-      if (resV1.validStripesCount > 0) {
+    const finish = (res, version, gridSize) => {
+      if (res.validStripesCount > 0) {
         this.missCount = 0;
       } else {
         this.missCount = (this.missCount || 0) + 1;
@@ -443,22 +422,45 @@ export class FrameDecoder {
       }
 
       return {
-        ok: resV1.validStripesCount > 0,
+        ok: res.validStripesCount > 0,
         corners: globalCorners,
-        stripes: resV1.stripes,
+        stripes: res.stripes,
         stats: {
           totalMs: performance.now() - t0,
-          validStripesCount: resV1.validStripesCount,
-          version: resV1.validStripesCount > 0 ? 1 : (this.version === 'auto' ? 'auto' : 1),
-          gridSize: 80
+          validStripesCount: res.validStripesCount,
+          version: res.validStripesCount > 0 ? version : (this.version === 'auto' ? 'auto' : version),
+          gridSize
         }
       };
+    };
+
+    if (this.version === 1) {
+      const resV1 = this._decodeV1Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator);
+      return finish(resV1, 1, 80);
+    }
+
+    if (this.version === 2) {
+      const resV2 = this._decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator, activeGridSize);
+      return finish(resV2, 2, activeGridSize);
+    }
+
+    if (this.version === 'auto') {
+      // 2-PAM pilots on an 80x80 grid: cheap v1 decode first, then v2 3-bit as the fallback.
+      // 4-PAM pilots (or 96/112 grids) can only be v2.
+      if (activeGridSize === 80 && !pilotCalibrator.hasPamPilots) {
+        const resV1 = this._decodeV1Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator);
+        if (resV1.validStripesCount > 0) return finish(resV1, 1, 80);
+        const resV2 = this._decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator, activeGridSize);
+        return finish(resV2.validStripesCount > 0 ? resV2 : resV1, resV2.validStripesCount > 0 ? 2 : 1, 80);
+      }
+      const resV2 = this._decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator, activeGridSize);
+      return finish(resV2, 2, activeGridSize);
     }
 
     return {
       ok: false,
       corners: globalCorners,
-      stripes: resV2 ? resV2.stripes : (resV1 ? resV1.stripes : []),
+      stripes: [],
       stats: {
         totalMs: performance.now() - t0,
         validStripesCount: 0,
@@ -467,12 +469,33 @@ export class FrameDecoder {
     };
   }
 
+  /**
+   * Slices one (averaged) cell for the given modulation using the local pilot thresholds.
+   * @private
+   */
+  _sliceCellForBpc(bpc, pilotCalibrator, c, r, rVal, gVal, bVal, alpha = this.xtalkAlpha) {
+    if (bpc === 6 && pilotCalibrator?.getThresholds4Pam) {
+      return sliceCell4Pam(rVal, gVal, bVal, pilotCalibrator.getThresholds4Pam(c, r), alpha);
+    }
+    if (bpc === 5 && pilotCalibrator?.getThresholds4Pam) {
+      const t4 = pilotCalibrator.getThresholds4Pam(c, r);
+      const { Tb } = pilotCalibrator.getThresholds(c, r);
+      return sliceCell5Pam(rVal, gVal, bVal, t4, Tb, alpha);
+    }
+    const { Tr, Tg, Tb } = pilotCalibrator.getThresholds(c, r);
+    const sc = pilotCalibrator.getScales
+      ? pilotCalibrator.getScales(c, r)
+      : { scaleR: 1.0, scaleG: 1.0, scaleB: 1.0 };
+    return sliceCellCausal(rVal, gVal, bVal, Tr, Tg, Tb, sc.scaleR, sc.scaleG, sc.scaleB);
+  }
+
   _decodeV2Stripes(rgba, width, height, H, timingRefiner, pilotCalibrator, activeGridSize = 80) {
     const numStripes = 8;
     const layout = getLayoutV2({ gridSize: activeGridSize, numStripes });
     const stripes = new Array(numStripes);
     let validStripesCount = 0;
-    const bpc = (this.bitsPerCell && this.bitsPerCell !== 3) ? this.bitsPerCell : 6;
+    // Modulation: explicit option wins; otherwise infer from the pilot style (4-PAM grayscale -> 6-bit, 2-PAM -> 3-bit)
+    const bpc = this.bitsPerCell || (pilotCalibrator.hasPamPilots ? 6 : 3);
 
     for (let s = 0; s < numStripes; s++) {
       const dataCells = layout.stripeDataCells[s];
@@ -501,7 +524,7 @@ export class FrameDecoder {
         st.curThresh,
         this.gridRgb,
         this.gridInBounds,
-        { gridSize: activeGridSize, bitsPerCell: bpc }
+        { gridSize: activeGridSize, bitsPerCell: bpc, xtalkAlpha: this.xtalkAlpha }
       );
 
       if (!sampleRes.ok) {
@@ -548,46 +571,59 @@ export class FrameDecoder {
       }
 
       const tryParse = (symbols, margins) => {
-        let res = { ok: false };
         const symBits = symbols.length * bpc;
-        const preferTurbo = activeGridSize >= 96 && symBits >= 488 * 8;
+        const attempt = (len) => {
+          const pkt = symbolsToBytesMultiBit(symbols, bpc, len);
+          const m = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, len) : null;
+          return parsePacketV2(pkt, s, m);
+        };
+        const sizes = [];
+        const turboSizes = symBits >= 496 * 8 ? [488, 496] : (symBits >= 488 * 8 ? [488] : []);
+        const stdSizes = [];
+        if (symBits >= V2_PACKET_BYTES_HIGH_RATE * 8) stdSizes.push(V2_PACKET_BYTES_HIGH_RATE);
+        if (symBits >= V2_PACKET_BYTES_STANDARD * 8) stdSizes.push(V2_PACKET_BYTES_STANDARD);
+        // Try the packet family that last succeeded first (the sender's mode is stable)
+        if (this._lastTurbo === false) sizes.push(...stdSizes, ...turboSizes);
+        else sizes.push(...turboSizes, ...stdSizes);
 
-        if (preferTurbo) {
-          const pkt488 = symbolsToBytesMultiBit(symbols, bpc, 488);
-          const m488 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 488) : null;
-          res = parsePacketV2(pkt488, s, m488);
-          if (!res.ok && symBits >= 496 * 8) {
-            const pkt496 = symbolsToBytesMultiBit(symbols, bpc, 496);
-            const m496 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 496) : null;
-            res = parsePacketV2(pkt496, s, m496);
-          }
-        }
-
-        if (!res.ok && symBits >= V2_PACKET_BYTES_HIGH_RATE * 8) {
-          const pkt250 = symbolsToBytesMultiBit(symbols, bpc, V2_PACKET_BYTES_HIGH_RATE);
-          const m250 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, V2_PACKET_BYTES_HIGH_RATE) : null;
-          res = parsePacketV2(pkt250, s, m250);
-        }
-        if (!res.ok && symBits >= V2_PACKET_BYTES_STANDARD * 8) {
-          const pkt254 = symbolsToBytesMultiBit(symbols, bpc, V2_PACKET_BYTES_STANDARD);
-          const m254 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, V2_PACKET_BYTES_STANDARD) : null;
-          res = parsePacketV2(pkt254, s, m254);
-        }
-
-        if (!res.ok && !preferTurbo && symBits >= 488 * 8) {
-          const pkt488 = symbolsToBytesMultiBit(symbols, bpc, 488);
-          const m488 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 488) : null;
-          res = parsePacketV2(pkt488, s, m488);
-          if (!res.ok && symBits >= 496 * 8) {
-            const pkt496 = symbolsToBytesMultiBit(symbols, bpc, 496);
-            const m496 = margins ? symbolsMarginsToByteMarginsMultiBit(margins, bpc, 496) : null;
-            res = parsePacketV2(pkt496, s, m496);
+        let res = { ok: false };
+        for (const len of sizes) {
+          res = attempt(len);
+          if (res.ok) {
+            this._lastTurbo = len >= 488;
+            return res;
           }
         }
         return res;
       };
 
       let packetRes = tryParse(sampleRes.symbols, sampleRes.margins);
+
+      // Adaptive linear-light crosstalk unmixing (4-PAM only): clean captures want alpha=0,
+      // real cameras want ~0.08. Re-slice the stored RGB with alternative alphas on failure
+      // and remember whichever alpha works.
+      if (!packetRes.ok && bpc >= 5 && pilotCalibrator.getThresholds4Pam) {
+        if (!this._xSym || this._xSym.length < count) {
+          this._xSym = new Uint8Array(count);
+          this._xMar = new Float32Array(count);
+        }
+        for (const a of XTALK_CANDIDATES) {
+          if (a === this.xtalkAlpha) continue;
+          for (let i = 0; i < count; i++) {
+            const { r, c } = dataCells[i];
+            const i3 = i * 3;
+            const sl = this._sliceCellForBpc(bpc, pilotCalibrator, c, r, st.curRgb[i3], st.curRgb[i3 + 1], st.curRgb[i3 + 2], a);
+            this._xSym[i] = sl.sym;
+            this._xMar[i] = sl.margin;
+          }
+          const xr = tryParse(this._xSym.subarray(0, count), this._xMar.subarray(0, count));
+          if (xr.ok) {
+            packetRes = xr;
+            this.xtalkAlpha = a;
+            break;
+          }
+        }
+      }
 
       if (!packetRes.ok && st.hasPrev && mad <= 14) {
         for (let i = 0; i < count; i++) {
@@ -596,18 +632,9 @@ export class FrameDecoder {
           const rAvg = 0.5 * (st.curRgb[i3] + st.prevRgb[i3]);
           const gAvg = 0.5 * (st.curRgb[i3 + 1] + st.prevRgb[i3 + 1]);
           const bAvg = 0.5 * (st.curRgb[i3 + 2] + st.prevRgb[i3 + 2]);
-          if (bpc === 6 && pilotCalibrator?.getThresholds4Pam) {
-            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
-            const sliced = sliceCell4Pam(rAvg, gAvg, bAvg, t4);
-            st.accumSymbols[i] = sliced.sym;
-            st.accumMargins[i] = sliced.margin;
-          } else if (bpc === 5 && pilotCalibrator?.getThresholds4Pam) {
-            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
-            const { Tb } = pilotCalibrator.getThresholds(c, r);
-            const sliced = sliceCell5Pam(rAvg, gAvg, bAvg, t4, Tb);
-            st.accumSymbols[i] = sliced.sym;
-            st.accumMargins[i] = sliced.margin;
-          }
+          const sliced = this._sliceCellForBpc(bpc, pilotCalibrator, c, r, rAvg, gAvg, bAvg);
+          st.accumSymbols[i] = sliced.sym;
+          st.accumMargins[i] = sliced.margin;
         }
         const pairRes = tryParse(st.accumSymbols, st.accumMargins);
         if (pairRes.ok) {
@@ -623,18 +650,9 @@ export class FrameDecoder {
           const rAvg = st.sumRgb[i3] * inv;
           const gAvg = st.sumRgb[i3 + 1] * inv;
           const bAvg = st.sumRgb[i3 + 2] * inv;
-          if (bpc === 6 && pilotCalibrator?.getThresholds4Pam) {
-            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
-            const sliced = sliceCell4Pam(rAvg, gAvg, bAvg, t4);
-            st.accumSymbols[i] = sliced.sym;
-            st.accumMargins[i] = sliced.margin;
-          } else if (bpc === 5 && pilotCalibrator?.getThresholds4Pam) {
-            const t4 = pilotCalibrator.getThresholds4Pam(c, r);
-            const { Tb } = pilotCalibrator.getThresholds(c, r);
-            const sliced = sliceCell5Pam(rAvg, gAvg, bAvg, t4, Tb);
-            st.accumSymbols[i] = sliced.sym;
-            st.accumMargins[i] = sliced.margin;
-          }
+          const sliced = this._sliceCellForBpc(bpc, pilotCalibrator, c, r, rAvg, gAvg, bAvg);
+          st.accumSymbols[i] = sliced.sym;
+          st.accumMargins[i] = sliced.margin;
         }
         const accRes = tryParse(st.accumSymbols, st.accumMargins);
         if (accRes.ok) {

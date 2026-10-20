@@ -65,9 +65,10 @@ export function getDropletPhase(seed, K, alpha = 0.15) {
  * @param {number} seed
  * @param {number} K
  * @param {number} [alpha=0.15]
+ * @param {boolean} [legacyDegree=false] - Pre-Tier-1 Phase-3 degree distribution (old recordings)
  * @returns {number[]} Array of unique block indices
  */
-export function getDropletIndices(seed, K, alpha = 0.15) {
+export function getDropletIndices(seed, K, alpha = 0.15, legacyDegree = false) {
   if (K <= 1) return [0];
 
   // Phase 1: Systematic (1-to-1 block mapping via permutation)
@@ -93,7 +94,7 @@ export function getDropletIndices(seed, K, alpha = 0.15) {
 
   // Phase 3: Rateless fountain
   const rng = new PRNG(seedMix(seed ^ 0x55555555));
-  const degree = sampleResidualDegree(rng, K);
+  const degree = sampleResidualDegree(rng, K, legacyDegree);
 
   const set = new Set();
   while (set.size < degree) {

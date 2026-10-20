@@ -20,6 +20,9 @@ export class RxSession {
     this.isComplete = false;
     this.result = null;
     this.error = null;
+    this.isFinalizing = false;
+    this.legacyDegree = false;
+    this._droplets = [];
   }
 
   /**
@@ -56,12 +59,54 @@ export class RxSession {
     }
 
     const added = this.fountainDecoder.addDroplet(header.seed, payloadU32);
+    if (added && !this.legacyDegree) {
+      // Keep raw droplets so the transfer can be re-decoded with the legacy degree distribution
+      this._droplets.push({ seed: header.seed, payload: new Uint32Array(payloadU32) });
+    }
 
-    if (this.fountainDecoder.isComplete() && !this.isComplete) {
-      await this._finalize();
+    // isFinalizing prevents concurrent callers from entering _finalize() twice while it awaits
+    if (this.fountainDecoder.isComplete() && !this.isComplete && !this.isFinalizing) {
+      this.isFinalizing = true;
+      try {
+        await this._finalize();
+      } catch (err) {
+        if (!this.legacyDegree && await this._retryWithLegacyDegree()) {
+          return added;
+        }
+        throw err;
+      } finally {
+        this.isFinalizing = false;
+      }
     }
 
     return added;
+  }
+
+  /**
+   * Re-decodes the logged droplets with the pre-Tier-1 Phase-3 degree distribution (recordings
+   * produced by older senders). Restores the original decoder if that also fails.
+   * @private
+   * @returns {Promise<boolean>} true if the transfer finalized successfully
+   */
+  async _retryWithLegacyDegree() {
+    const original = this.fountainDecoder;
+    const originalError = this.error;
+    const legacy = new FountainDecoder(this.K, { legacyDegree: true });
+    for (const d of this._droplets) legacy.addDroplet(d.seed, d.payload);
+    if (!legacy.isComplete()) return false;
+
+    this.fountainDecoder = legacy;
+    this.legacyDegree = true;
+    try {
+      await this._finalize();
+      this.error = null;
+      return true;
+    } catch (_) {
+      this.fountainDecoder = original;
+      this.legacyDegree = false;
+      this.error = originalError;
+      return false;
+    }
   }
 
   /**

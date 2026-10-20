@@ -44,10 +44,11 @@ const stripeBars = [
   document.getElementById('stripe7')
 ];
 
-// Initialize multi-worker RX pool (2–3 Web Workers) to eliminate workerBusy frame drops
-const POOL_SIZE = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency)
-  ? Math.max(2, Math.min(3, navigator.hardwareConcurrency - 1))
-  : 2;
+// A single sequential vision worker: FrameDecoder is stateful across consecutive frames
+// (temporal accumulation, 2-frame averaging, hold-window skipping, tear stitching), so frames
+// must reach one decoder in capture order. Round-robin across workers made every worker's
+// "previous frame" t-N, which silently disabled all of those features.
+const POOL_SIZE = 1;
 
 const workers = [];
 for (let i = 0; i < POOL_SIZE; i++) {
@@ -65,8 +66,17 @@ for (let i = 0; i < POOL_SIZE; i++) {
   workers.push(workerObj);
 }
 
-async function handleWorkerMessage(workerObj, e) {
+let ingestChain = Promise.resolve();
+function handleWorkerMessage(workerObj, e) {
   workerObj.busy = false;
+  // Serialize message handling so async ingest/finalize never interleaves
+  ingestChain = ingestChain.then(() => processWorkerMessage(workerObj, e)).catch((err) => {
+    console.error('RX message handling failed:', err);
+  });
+  return ingestChain;
+}
+
+async function processWorkerMessage(workerObj, e) {
   const { type, ok, corners, stripes, decodeMs, frameId, sessionId } = e.data;
 
   // Discard frames from previous sessions
@@ -90,7 +100,12 @@ async function handleWorkerMessage(workerObj, e) {
   if (ok && stripes) {
     for (const stripe of stripes) {
       if (stripe && stripe.ok && stripe.header && stripe.payloadU32) {
-        await rxSession.ingestPacket(stripe.header, stripe.payloadU32);
+        try {
+          await rxSession.ingestPacket(stripe.header, stripe.payloadU32);
+        } catch (err) {
+          // _finalize() failures (corrupt manifest / hash mismatch) are recorded on rxSession.error
+          console.warn('ingestPacket failed:', err);
+        }
       }
     }
   }
@@ -183,44 +198,15 @@ async function tryLockCameraHardware() {
     }
 
     const caps = track.getCapabilities();
-    const settings = (typeof track.getSettings === 'function') ? track.getSettings() : {};
     const advanced = [];
 
-    // 1. Lock White Balance to manual if supported
-    if (caps.whiteBalanceMode && Array.isArray(caps.whiteBalanceMode) && caps.whiteBalanceMode.includes('manual')) {
-      advanced.push({ whiteBalanceMode: 'manual' });
-    }
+    // NOTE: exposure and white balance intentionally stay in continuous auto mode.
+    // Switching to 'manual' resets colorTemperature and guesses exposureTime units, which can
+    // black out the feed; PilotCalibrator already tracks per-frame gain/WB via the 16 pilot blocks.
 
-    // 2. Lock Exposure Mode to manual if supported
-    if (caps.exposureMode && Array.isArray(caps.exposureMode) && caps.exposureMode.includes('manual')) {
-      advanced.push({ exposureMode: 'manual' });
-    }
-
-    // 3. Lock Focus Mode to continuous or manual if supported
-    if (caps.focusMode && Array.isArray(caps.focusMode)) {
-      if (caps.focusMode.includes('continuous')) {
-        advanced.push({ focusMode: 'continuous' });
-      } else if (caps.focusMode.includes('manual')) {
-        advanced.push({ focusMode: 'manual' });
-      }
-    }
-
-    // 4. Cap exposure time to <= 1/60s for crisp rolling shutter transitions
-    // Units in W3C ImageCapture: 100-microsecond units (max > 100), ms (max <= 100), or seconds (max <= 1)
-    if (caps.exposureTime && typeof caps.exposureTime === 'object') {
-      const minExp = caps.exposureTime.min || 0;
-      const maxExp = caps.exposureTime.max || 100;
-      let cap60;
-      if (maxExp <= 1.0) {
-        cap60 = 1.0 / 60.0; // seconds
-      } else if (maxExp <= 100.0) {
-        cap60 = 1000.0 / 60.0; // milliseconds (~16.6 ms)
-      } else {
-        cap60 = 10000.0 / 60.0; // 100-microsecond units (~166.6 units)
-      }
-      const curExp = settings.exposureTime || cap60;
-      const targetExp = Math.max(minExp, Math.min(curExp, cap60, maxExp));
-      advanced.push({ exposureTime: targetExp });
+    // Keep continuous focus where supported (never force manual focus)
+    if (caps.focusMode && Array.isArray(caps.focusMode) && caps.focusMode.includes('continuous')) {
+      advanced.push({ focusMode: 'continuous' });
     }
 
     if (advanced.length > 0) {

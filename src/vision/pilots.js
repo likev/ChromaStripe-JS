@@ -111,6 +111,22 @@ export class PilotCalibrator {
           ? [9, 39, 69, 99]
           : [9, Math.round(9 + (G - 20) / 3), Math.round(9 + 2 * (G - 20) / 3), G - 11];
 
+    // Pass 1: majority vote across all 16 pilot blocks decides 2-PAM vs 4-PAM for the whole
+    // frame (a single glare-corrupted block must not flip the pilot style).
+    const lumaOf = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
+    let pamVotes = 0;
+    for (let rIdx = 0; rIdx < 4; rIdx++) {
+      for (let cIdx = 0; cIdx < 4; cIdx++) {
+        const cB = offsets[cIdx];
+        const rB = offsets[rIdx];
+        const lW = lumaOf(samplePilotCore(cB + 0.5, rB + 0.5));
+        const lK = lumaOf(samplePilotCore(cB + 1.5, rB + 0.5));
+        const lM = lumaOf(samplePilotCore(cB + 1.5, rB + 1.5));
+        if ((lM > lW + 35) && (lW <= lK + 35)) pamVotes++;
+      }
+    }
+    this.hasPamPilots = pamVotes >= 8;
+
     for (let rIdx = 0; rIdx < 4; rIdx++) {
       const rBase = offsets[rIdx];
       for (let cIdx = 0; cIdx < 4; cIdx++) {
@@ -153,15 +169,9 @@ export class PilotCalibrator {
 
         // 4-PAM thresholds: Tr01, Tr12, Tr23, Tg01, Tg12, Tg23, Tb01, Tb12, Tb23
         const p4Idx = (rIdx * 4 + cIdx) * 9;
-        const lumaW = 0.299 * wR + 0.587 * wG + 0.114 * wB;
-        const lumaK = 0.299 * kR + 0.587 * kG + 0.114 * kB;
-        const lumaM = 0.299 * mR + 0.587 * mG + 0.114 * mB;
-
         // In 4-PAM, cell 0 (w) is darkest (L0) and cell 3 (m) is brightest (L3).
         // In 2-PAM, cell 0 (w) is White (brightest) and cell 1 (k) is Black (darkest).
-        const isPamPilot = (lumaM > lumaW + 35) && (lumaW <= lumaK + 35);
-        if (isPamPilot) {
-          this.hasPamPilots = true;
+        if (this.hasPamPilots) {
           const rLevels = [wR, kR, cR, mR].sort((a, b) => a - b);
           const gLevels = [wG, kG, cG, mG].sort((a, b) => a - b);
           const bLevels = [wB, kB, cB, mB].sort((a, b) => a - b);
@@ -356,8 +366,8 @@ export class PilotCalibrator {
     const y0 = coords[j];
     const y1 = coords[j + 1];
 
-    const s = Math.max(0.0, Math.min(1.0, (u - x0) / (x1 - x0)));
-    const t = Math.max(0.0, Math.min(1.0, (v - y0) / (y1 - y0)));
+    const s = Math.max(-0.4, Math.min(1.4, (u - x0) / (x1 - x0)));
+    const t = Math.max(-0.4, Math.min(1.4, (v - y0) / (y1 - y0)));
 
     const idx00 = (j * 4 + i) * 9;
     const idx10 = (j * 4 + (i + 1)) * 9;

@@ -44,7 +44,7 @@ const hud = document.getElementById('hud');
  * Updates TX dimensions on session, canvas, renderer, and size selector labels.
  */
 function updateTxDimensions() {
-  const gridSize = gridSelect ? parseInt(gridSelect.value, 10) : 80;
+  const gridSize = (versionSelect && versionSelect.value === '1') ? 80 : (gridSelect ? parseInt(gridSelect.value, 10) : 80);
   const autoCorePx = computeAutoCorePx({ guardPx: 1, gridSize });
   const autoDims = getDimensionsForCorePx(autoCorePx, 1, gridSize);
 
@@ -99,9 +99,9 @@ async function handleFile(file) {
   const { corePx, guardPx } = updateTxDimensions();
 
   const version = versionSelect ? parseInt(versionSelect.value, 10) : 2;
-  const gridSize = gridSelect ? parseInt(gridSelect.value, 10) : 80;
+  const gridSize = version === 1 ? 80 : (gridSelect ? parseInt(gridSelect.value, 10) : 80);
   const rateMode = rateModeSelect ? parseInt(rateModeSelect.value, 10) : 1;
-  const bitsPerCell = modSelect ? parseInt(modSelect.value, 10) : (version === 2 ? 6 : 3);
+  const bitsPerCell = version === 1 ? 3 : (modSelect ? parseInt(modSelect.value, 10) : 6);
 
   session = new TxSession(bytes, {
     fileName: file.name,
@@ -138,6 +138,12 @@ if (versionSelect) {
     const isV2 = versionSelect.value === '2';
     if (rateModeField) rateModeField.style.display = isV2 ? 'block' : 'none';
     if (modField) modField.style.display = isV2 ? 'block' : 'none';
+    // v1 is fixed at 80x80: lock the grid selector so UI matches what is transmitted
+    if (gridSelect) {
+      if (!isV2) gridSelect.value = '80';
+      gridSelect.disabled = !isV2;
+    }
+    updateTxDimensions();
     if (currentFile) handleFile(currentFile);
   });
 }

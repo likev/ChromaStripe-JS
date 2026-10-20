@@ -27,8 +27,10 @@ export class TimingRefiner {
    * @param {Array<{x: number, y: number}>} [corners] - Optional corner points
    * @param {number} [cachedK1] - Optional cached k1
    * @param {number} [gridSize=80] - Grid dimension
+   * @param {{cx: number, cy: number, normScale: number}|null} [lens] - Optical center/scale of the FULL
+   *   camera frame expressed in this buffer's coordinates (needed when the buffer is an ROI crop).
    */
-  constructor(rgba, width, height, H, corners = null, cachedK1 = null, gridSize = 80) {
+  constructor(rgba, width, height, H, corners = null, cachedK1 = null, gridSize = 80, lens = null) {
     this.H = H;
     this.width = width;
     this.height = height;
@@ -48,14 +50,15 @@ export class TimingRefiner {
     this.dvField = null;
     this.hasLensDistortion = false;
     this.bestK1 = 0;
+    this.lens = lens;
 
     this._analyze(rgba, cachedK1);
   }
 
   _analyze(rgba, cachedK1) {
-    const cx = this.width * 0.5;
-    const cy = this.height * 0.5;
-    const normScale = Math.min(cx, cy);
+    const cx = this.lens ? this.lens.cx : this.width * 0.5;
+    const cy = this.lens ? this.lens.cy : this.height * 0.5;
+    const normScale = this.lens ? this.lens.normScale : Math.min(cx, cy);
     const invScale = 1.0 / normScale;
     const w = this.width;
     const h = this.height;

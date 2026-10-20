@@ -11,6 +11,8 @@ import { encodeDroplet } from '../fountain/encoder.js';
 import { getDropletPhase } from '../fountain/schedule.js';
 import { buildPacket, buildPacketV2 } from '../frame/packet.js';
 import { renderFrame } from '../frame/renderer.js';
+import { getLayoutV2 } from '../frame/layout.js';
+import { V2_TURBO_PACKET_BYTES_STANDARD } from '../frame/constants.js';
 
 export class TxSession {
   /**
@@ -27,6 +29,7 @@ export class TxSession {
    * @param {number} [options.bitsPerCell]
    * @param {number} [options.numStripes]
    * @param {number} [options.rateMode=1]
+   * @param {boolean} [options.turbo] - Force (true) / disable (false) dual-codeword Turbo; auto when omitted (v2)
    */
   constructor(fileData, options = {}) {
     this.fileData = fileData;
@@ -38,15 +41,24 @@ export class TxSession {
     this.guardPx = options.guardPx !== undefined ? options.guardPx : undefined;
 
     this.version = options.version || 1;
-    this.gridSize = options.gridSize || 80;
-    this.bitsPerCell = options.bitsPerCell || (this.version === 2 ? 6 : 3);
-    this.numStripes = options.numStripes || (this.version === 2 ? 8 : 4);
+    // v1 is fixed: 80x80, 3-bit 2-PAM RGB, 4 stripes (never inherit v2 UI settings)
+    this.gridSize = this.version === 1 ? 80 : (options.gridSize || 80);
+    this.bitsPerCell = this.version === 1 ? 3 : (options.bitsPerCell || 6);
+    this.numStripes = this.version === 1 ? 4 : (options.numStripes || 8);
     this.rateMode = options.rateMode !== undefined ? options.rateMode : 1; // 1 = HIGH_RATE
 
     if (options.payloadWords) {
       this.wordsPerBlock = options.payloadWords;
-    } else if (options.turbo) {
+    } else if (options.turbo === true) {
       this.wordsPerBlock = 112;
+    } else if (this.version === 2 && options.turbo !== false) {
+      // Auto-Turbo: use dual-codeword packets whenever EVERY stripe can hold one,
+      // so the grid is not mostly dummy fill.
+      const layout = getLayoutV2({ gridSize: this.gridSize, numStripes: this.numStripes });
+      let minCells = Infinity;
+      for (const cells of layout.stripeDataCells) minCells = Math.min(minCells, cells.length);
+      const fitsTurbo = minCells * this.bitsPerCell >= V2_TURBO_PACKET_BYTES_STANDARD * 8;
+      this.wordsPerBlock = fitsTurbo ? 112 : 56;
     } else {
       this.wordsPerBlock = this.version === 2 ? 56 : 112;
     }

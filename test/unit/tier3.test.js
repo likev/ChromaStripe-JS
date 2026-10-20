@@ -242,6 +242,7 @@ test('tier3: end-to-end transmit, vision decode, and exact SHA-256 reconstructio
     bitsPerCell: 6,
     numStripes: 8,
     rateMode: RS_RATE_MODES.HIGH_RATE,
+    turbo: false, // explicit single-codeword mode (default auto-selects dual-codeword when it fits)
     scale: 1
   });
   await tx.init();

@@ -219,13 +219,37 @@ export function getLayoutV2(options = {}) {
   }
 
   // Micro-stripe partitions: 8 horizontal stripes
-  const rowsPerStripe = gridSize / numStripes;
+  // Row boundaries balance the DATA cell count per stripe: the outer stripes lose
+  // cells to the 8x8 corner finders, so they receive extra rows.
+  const cumData = new Int32Array(gridSize + 1);
+  for (let r = 0; r < gridSize; r++) {
+    let n = 0;
+    for (let c = 0; c < gridSize; c++) {
+      if (cellClass[r * gridSize + c] === CELL_TYPE.DATA) n++;
+    }
+    cumData[r + 1] = cumData[r] + n;
+  }
+  const totalData = cumData[gridSize];
+  // boundary[s] = first row of stripe s
+  const boundary = [0];
+  for (let s = 1; s < numStripes; s++) {
+    const target = (totalData * s) / numStripes;
+    let best = boundary[s - 1] + 1;
+    let bestDiff = Infinity;
+    for (let r = boundary[s - 1] + 1; r <= gridSize - (numStripes - s); r++) {
+      const diff = Math.abs(cumData[r] - target);
+      if (diff < bestDiff) { bestDiff = diff; best = r; }
+    }
+    boundary.push(best);
+  }
+  boundary.push(gridSize);
+
   const stripeDataCells = Array.from({ length: numStripes }, () => []);
   const stripeRows = [];
 
   for (let s = 0; s < numStripes; s++) {
-    const rStart = Math.round(s * rowsPerStripe);
-    const rEnd = Math.round((s + 1) * rowsPerStripe) - 1;
+    const rStart = boundary[s];
+    const rEnd = boundary[s + 1] - 1;
     stripeRows.push([rStart, rEnd]);
 
     for (let r = rStart; r <= rEnd; r++) {

@@ -8,9 +8,11 @@ import { solveBinarySystem } from './gauss.js';
 export class FountainDecoder {
   /**
    * @param {number} K - Total number of source blocks
+   * @param {{legacyDegree?: boolean}} [options]
    */
-  constructor(K) {
+  constructor(K, options = {}) {
     this.K = K;
+    this.legacyDegree = !!options.legacyDegree;
     this.solved = new Array(K).fill(null);
     this.isSolved = new Uint8Array(K);
     this.solvedCount = 0;
@@ -63,7 +65,7 @@ export class FountainDecoder {
     this.seenSeeds.add(seed);
     this.receivedCount++;
 
-    const rawIndices = getDropletIndices(seed, this.K);
+    const rawIndices = getDropletIndices(seed, this.K, 0.15, this.legacyDegree);
     const payload = new Uint32Array(payloadU32);
 
     // XOR out all currently solved blocks

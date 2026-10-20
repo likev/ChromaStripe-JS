@@ -77,6 +77,42 @@ export function sliceCellCentroid(rVal, gVal, bVal, centroids) {
 }
 
 /**
+ * Linear-light cross-channel crosstalk unmixing.
+ *
+ * Optical/Bayer crosstalk happens in linear light, before the camera's gamma curve,
+ * while the grayscale 4-PAM pilots (R=G=B) experience none of it. A dark channel next to a
+ * bright one therefore reads far above its nominal level in sRGB counts. This pulls each
+ * channel back toward its own level by removing `alpha` of the linear difference to the
+ * other two channels.
+ *
+ * @param {number} rVal
+ * @param {number} gVal
+ * @param {number} bVal
+ * @param {number} [alpha=0.08] - Crosstalk coefficient in linear light
+ * @param {number[]} [out] - Optional 3-element output
+ * @returns {number[]} [r, g, b] in sRGB counts
+ */
+const GAMMA = 2.2;
+const INV_GAMMA = 1 / GAMMA;
+// Default 0: unmixing over-corrects clean (crosstalk-free) captures, so callers opt in (adaptively)
+const XTALK_ALPHA = 0;
+const UNMIX_SCRATCH = [0, 0, 0];
+export function unmixLinearCrosstalk(rVal, gVal, bVal, alpha = 0.08, out = [0, 0, 0]) {
+  const pR = Math.pow(Math.max(0, rVal) / 255.0, GAMMA);
+  const pG = Math.pow(Math.max(0, gVal) / 255.0, GAMMA);
+  const pB = Math.pow(Math.max(0, bVal) / 255.0, GAMMA);
+
+  const uR = Math.max(0, pR - alpha * (pG - pR) - alpha * (pB - pR));
+  const uG = Math.max(0, pG - alpha * (pR - pG) - alpha * (pB - pG));
+  const uB = Math.max(0, pB - alpha * (pR - pB) - alpha * (pG - pB));
+
+  out[0] = 255.0 * Math.pow(uR, INV_GAMMA);
+  out[1] = 255.0 * Math.pow(uG, INV_GAMMA);
+  out[2] = 255.0 * Math.pow(uB, INV_GAMMA);
+  return out;
+}
+
+/**
  * 4-PAM 6-Bit Gray-coded Constellation Slicer ([4x4x4] = 6 bits/cell).
  *
  * @param {number} rVal
@@ -85,7 +121,11 @@ export function sliceCellCentroid(rVal, gVal, bVal, centroids) {
  * @param {Float32Array|number[]} thresh4Pam - 9 thresholds [Tr01, Tr12, Tr23, Tg01, Tg12, Tg23, Tb01, Tb12, Tb23]
  * @returns {{ sym: number, margin: number }}
  */
-export function sliceCell4Pam(rVal, gVal, bVal, thresh4Pam) {
+export function sliceCell4Pam(rVal, gVal, bVal, thresh4Pam, alpha = XTALK_ALPHA) {
+  if (alpha > 0) {
+    const u = unmixLinearCrosstalk(rVal, gVal, bVal, alpha, UNMIX_SCRATCH);
+    rVal = u[0]; gVal = u[1]; bVal = u[2];
+  }
   // R channel: 2 Gray-coded bits
   let bR = 0, mR = 0;
   if (rVal < thresh4Pam[0]) {
@@ -143,7 +183,11 @@ export function sliceCell4Pam(rVal, gVal, bVal, thresh4Pam) {
 /**
  * 4-PAM 5-Bit Constellation Slicer ([4x4x2] = 5 bits/cell).
  */
-export function sliceCell5Pam(rVal, gVal, bVal, thresh4Pam, Tb = 128) {
+export function sliceCell5Pam(rVal, gVal, bVal, thresh4Pam, Tb = 128, alpha = XTALK_ALPHA) {
+  if (alpha > 0) {
+    const u = unmixLinearCrosstalk(rVal, gVal, bVal, alpha, UNMIX_SCRATCH);
+    rVal = u[0]; gVal = u[1]; bVal = u[2];
+  }
   let bR = 0, mR = 0;
   if (rVal < thresh4Pam[0]) {
     bR = 0;
@@ -361,6 +405,7 @@ export function sampleStripeCells(
 ) {
   const G = options.gridSize || pilotCalibrator?.gridSize || 80;
   const bitsPerCell = options.bitsPerCell || 3;
+  const xtalkAlpha = options.xtalkAlpha || 0;
   const count = stripeDataCells.length;
   const symbols = outSymbols || new Uint8Array(count);
   const margins = outMargins || new Float32Array(count);
@@ -415,7 +460,7 @@ export function sampleStripeCells(
     let res;
     if (bitsPerCell === 6 && pilotCalibrator?.getThresholds4Pam) {
       const t4 = pilotCalibrator.getThresholds4Pam(c, r);
-      res = sliceCell4Pam(rVal, gVal, bVal, t4);
+      res = sliceCell4Pam(rVal, gVal, bVal, t4, xtalkAlpha);
       if (outThresh) {
         const idx3 = i * 3;
         outThresh[idx3] = t4[1];
@@ -425,7 +470,7 @@ export function sampleStripeCells(
     } else if (bitsPerCell === 5 && pilotCalibrator?.getThresholds4Pam) {
       const t4 = pilotCalibrator.getThresholds4Pam(c, r);
       const { Tb } = pilotCalibrator.getThresholds(c, r);
-      res = sliceCell5Pam(rVal, gVal, bVal, t4, Tb);
+      res = sliceCell5Pam(rVal, gVal, bVal, t4, Tb, xtalkAlpha);
       if (outThresh) {
         const idx3 = i * 3;
         outThresh[idx3] = t4[1];
