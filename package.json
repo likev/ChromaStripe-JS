@@ -1,6 +1,6 @@
 {
   "name": "chromastripe-js",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "High-speed optical modem in 100% vanilla JavaScript",
   "type": "module",
   "main": "src/index.js",
