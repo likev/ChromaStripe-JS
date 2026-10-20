@@ -101,7 +101,7 @@ async function handleFile(file) {
   const version = versionSelect ? parseInt(versionSelect.value, 10) : 2;
   const gridSize = version === 1 ? 80 : (gridSelect ? parseInt(gridSelect.value, 10) : 80);
   const rateMode = rateModeSelect ? parseInt(rateModeSelect.value, 10) : 1;
-  const bitsPerCell = version === 1 ? 3 : (modSelect ? parseInt(modSelect.value, 10) : 6);
+  const bitsPerCell = version === 1 ? 3 : (modSelect ? parseInt(modSelect.value, 10) : 3);
 
   session = new TxSession(bytes, {
     fileName: file.name,
